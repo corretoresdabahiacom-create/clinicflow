@@ -1,0 +1,11 @@
+{
+  // Modo A (homologação). NÃO implantado. Segredos (ex.: SUPABASE_SERVICE_ROLE_KEY) via `wrangler secret put`, nunca aqui.
+  "name": "clinicflow-hml-api",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  "vars": {
+    "APP_ENV": "hml",
+    "SUPABASE_URL": "https://tbnzrwgwbmkdjinisrhl.supabase.co",
+    "EXPECTED_PROJECT_REF": "tbnzrwgwbmkdjinisrhl"
+  }
+}

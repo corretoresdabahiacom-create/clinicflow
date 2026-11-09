@@ -10,3 +10,6 @@ Nenhum teste foi executado (não há código). Estratégia:
 - Clínico: acesso permitido/negado, adendos, imutabilidade, exportação, legal hold, auditoria.
 - E2E (Playwright), acessibilidade (axe), desempenho básico.
 Regras: dados sintéticos apenas; resultados reais registrados no relatório de cada subfase; teste não executado é reportado como não executado.
+
+## Resultados reais (Fase 1A)
+RLS 43/43 (rls_isolation.sql), contrato repo 14/14 (repo_contract.sql), API 22/22. Ver docs/REPORT_1A.md.

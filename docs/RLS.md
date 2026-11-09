@@ -10,3 +10,6 @@
 8. `service_role` ignora RLS: uso restrito conforme ADR-003.
 9. Testes (pgTAP ou scripts de integração): para cada tabela, matriz usuário×org×papel comprovando acesso permitido e negado; teste de IDOR trocando IDs entre organizações; consulta sem JWT.
 10. Performance: índices em colunas usadas pelas políticas; evitar subconsultas não cacheadas (usar `(select auth.uid())`).
+
+## Implementação (Fase 1A)
+Policies RLS implementadas em 20261109000003_foundation_rls.sql; validadas por supabase/tests/rls_isolation.sql.

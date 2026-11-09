@@ -12,3 +12,6 @@
 | Produção (Modo B) | Supabase pago + backup/PITR, Workers pago se necessário, observabilidade | Cotar | **Custo zero em produção com dados médicos não é prometido** |
 
 Monitoramento: painel de consumo e alerta a 80% dos limites (Fase 1A). Custo atual: R$ 0 (nada contratado). Estimativa de produção: a levantar na cotação do Gate.
+
+## Custo atual (Fase 1A)
+R$ 0: um projeto Supabase free de homologação. Sem Cloudflare, sem serviços pagos.
