@@ -19,3 +19,6 @@ Legenda: ● total · ◐ restrito (escopo/vínculo/atribuição) · ○ nenhum 
 
 Regras: (1) permissão = papel + escopo (org/unidade) + estado do recurso + plano/assinatura ativa; (2) acesso clínico exige vínculo e registra finalidade em `data_access_logs`; (3) acesso emergencial (⚠): justificativa obrigatória, expiração automática, alerta ao proprietário e registro em `security_events`; (4) o frontend só espelha o que o backend retorna.
 Chaves de permissão seguem `domínio.ação` (ex.: `agenda.read`, `clinical.note.write`, `finance.ledger.reverse`).
+
+## Implementado na 1B (chaves)
+professional.read/write, resource.read/write, service.read/write, agenda.read/write. Leitura de profissionais/serviços vale em qualquer escopo; escrita exige escopo organizacional (salas/equipamentos/agenda: por unidade). **Não implementado:** agenda "própria" do médico (só leitura da unidade inteira).

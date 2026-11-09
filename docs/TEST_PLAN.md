@@ -13,3 +13,9 @@ Regras: dados sintéticos apenas; resultados reais registrados no relatório de 
 
 ## Resultados reais (Fase 1A)
 RLS 43/43 (rls_isolation.sql), contrato repo 14/14 (repo_contract.sql), API 22/22. Ver docs/REPORT_1A.md.
+
+## Resultados reais (Fase 1B)
+- `scheduling_rules.sql`: 21 asserções (conflito, buffers, atomicidade, RLS, escopo de unidade, imutabilidade, cross-tenant) — Postgres 16 local descartável.
+- `concurrency.sh`: 30 conexões simultâneas confirmadas (1 reserva/29 conflitos; 30 disjuntas = 30 reservas; 60 sobrepostas aleatórias sem sobreposição ativa; 30 cancelamentos = 1; remarcações concorrentes = 1). Executado 4 vezes; controle negativo sem a constraint falha como esperado.
+- hml (Supabase): smoke de 9 verificações (agendar, conflito, remarcar, cancelar, médico bloqueado, escrita direta negada, anon sem execute).
+- API: 13 testes novos (35 no total).

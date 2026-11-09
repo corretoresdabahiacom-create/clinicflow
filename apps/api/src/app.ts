@@ -26,6 +26,43 @@ const orgPatch = z.object({
   cnpj: z.string().regex(/^\d{14}$/).nullable().optional(),
   timezone: tz.optional(),
 }).strict().refine(nonEmpty, 'empty patch');
+const council = z.enum(['CRM', 'COREN', 'CRF', 'CRP', 'CREFITO', 'CRN', 'OUTRO']);
+const professionalCreate = z.object({
+  full_name: name, member_id: uuid.optional(),
+  council: council.optional(), council_number: z.string().regex(/^[0-9A-Za-z.-]{1,20}$/).optional(),
+  council_uf: z.string().regex(/^[A-Z]{2}$/).optional(), specialty: z.string().trim().min(2).max(120).optional(),
+}).strict().refine((v) => !!v.council === !!v.council_number && !!v.council === !!v.council_uf, 'council, number and uf go together');
+const professionalPatch = z.object({
+  full_name: name.optional(), council: council.optional(), council_number: z.string().regex(/^[0-9A-Za-z.-]{1,20}$/).optional(),
+  council_uf: z.string().regex(/^[A-Z]{2}$/).optional(), specialty: z.string().trim().min(2).max(120).optional(),
+  status: z.enum(['active', 'inactive']).optional(),
+}).strict().refine(nonEmpty, 'empty patch');
+const shortName = z.string().trim().min(1).max(120);
+const roomCreate = z.object({ unit_id: uuid, name: shortName, capacity: z.number().int().min(1).max(1000).optional() }).strict();
+const roomPatch = z.object({ name: shortName.optional(), capacity: z.number().int().min(1).max(1000).optional(), status: z.enum(['active', 'inactive']).optional() })
+  .strict().refine(nonEmpty, 'empty patch');
+const equipCreate = z.object({ unit_id: uuid, name: shortName }).strict();
+const equipPatch = z.object({ name: shortName.optional(), status: z.enum(['active', 'inactive']).optional() }).strict().refine(nonEmpty, 'empty patch');
+const mins = (max: number) => z.number().int().min(0).max(max);
+const serviceCreate = z.object({
+  name, kind: z.enum(['consultation', 'exam', 'procedure']), duration_minutes: z.number().int().min(5).max(720),
+  buffer_before_minutes: mins(120).optional(), buffer_after_minutes: mins(120).optional(),
+}).strict();
+const servicePatch = z.object({
+  name: name.optional(), duration_minutes: z.number().int().min(5).max(720).optional(),
+  buffer_before_minutes: mins(120).optional(), buffer_after_minutes: mins(120).optional(), status: z.enum(['active', 'inactive']).optional(),
+}).strict().refine(nonEmpty, 'empty patch');
+const instant = z.string().datetime({ offset: true });
+const resourceRef = z.object({ type: z.enum(['professional', 'room', 'equipment']), id: uuid }).strict();
+const bookBody = z.object({
+  unit_id: uuid, kind: z.enum(['appointment', 'block', 'maintenance']).default('appointment'),
+  service_id: uuid.optional(), starts_at: instant, ends_at: instant.optional(),
+  resources: z.array(resourceRef).min(1).max(20), title: z.string().trim().min(2).max(200).optional(),
+}).strict();
+const cancelBody = z.object({ reason: z.string().trim().min(3).max(300) }).strict();
+const rescheduleBody = z.object({ starts_at: instant, ends_at: instant.optional() }).strict();
+const eventsQuery = z.object({ unit_id: uuid.optional(), from: instant, to: instant, limit: z.coerce.number().int().min(1).max(500).default(200) })
+  .refine((q) => Date.parse(q.to) > Date.parse(q.from) && Date.parse(q.to) - Date.parse(q.from) <= 62 * 86400_000, 'range must be positive and at most 62 days');
 const auditQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   before: z.coerce.number().int().positive().optional(),
@@ -199,6 +236,123 @@ export function createApp(deps: Deps) {
     const q = auditQuery.parse(c.req.query());
     const items = await c.get('repo').listAudit(c.get('org')!.organization_id, q.limit, q.before);
     return c.json({ items });
+  });
+
+  // ---- idempotência obrigatória nas operações de agenda ----
+  const idempotent = async (c: Ctx, scope: string, input: unknown, exec: () => Promise<{ status: number; body: unknown }>) => {
+    const key = c.req.header('idempotency-key');
+    if (!key) throw new HttpError(400, 'Idempotency-Key header required');
+    validateIdempotencyKey(key);
+    const r = await runIdempotent(c.get('repo'),
+      { orgId: c.get('org')!.organization_id, userId: c.get('userId'), scope, key, hash: await sha256(JSON.stringify(input)) }, exec);
+    c.header('Idempotent-Replayed', String(r.replayed));
+    return c.json(r.body, r.status as 200 | 201);
+  };
+  const unitWrite = (c: Ctx, perm: string, unitId: string) => {
+    if (!can(c.get('org')!, perm, unitId)) throw new HttpError(403, 'Forbidden');
+  };
+  const idParam = (c: Ctx) => { const id = c.req.param('id') ?? ''; if (!uuid.safeParse(id).success) throw new HttpError(400, 'Invalid id'); return id; };
+  const orgId = (c: Ctx) => c.get('org')!.organization_id;
+
+  // ---- profissionais ----
+  org.get('/professionals', guard('professional.read', { anyUnit: true }), async (c) =>
+    c.json({ items: await c.get('repo').listCatalog('professionals', orgId(c)) }));
+  org.post('/professionals', guard('professional.write'), async (c) => {
+    const row = await c.get('repo').createCatalog('professionals', orgId(c), professionalCreate.parse(await readJson(c)));
+    await audit(c, { action: 'professional.create', resourceType: 'professional', resourceId: String(row.id), result: 'success' });
+    return c.json(row, 201);
+  });
+  org.patch('/professionals/:id', guard('professional.write'), async (c) => {
+    const id = idParam(c);
+    const row = await c.get('repo').updateCatalog('professionals', orgId(c), id, professionalPatch.parse(await readJson(c)));
+    if (!row) throw new HttpError(404, 'Not found');
+    await audit(c, { action: 'professional.update', resourceType: 'professional', resourceId: id, result: 'success' });
+    return c.json(row);
+  });
+  org.post('/professionals/:id/units', guard('professional.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const { unit_id } = z.object({ unit_id: uuid }).strict().parse(await readJson(c));
+    unitWrite(c, 'professional.write', unit_id);
+    await c.get('repo').linkProfessionalUnit(orgId(c), id, unit_id);
+    await audit(c, { action: 'professional.link_unit', resourceType: 'professional', resourceId: id, result: 'success', unitId: unit_id });
+    return c.json({ professional_id: id, unit_id }, 201);
+  });
+
+  // ---- salas e equipamentos (escopo por unidade) ----
+  for (const [path, table, create, patch] of [['rooms', 'rooms', roomCreate, roomPatch], ['equipment', 'equipment', equipCreate, equipPatch]] as const) {
+    org.get(`/${path}`, guard('resource.read', { anyUnit: true }), async (c) => {
+      const unit = c.req.query('unit_id');
+      if (unit && !uuid.safeParse(unit).success) throw new HttpError(400, 'Invalid unit_id');
+      return c.json({ items: await c.get('repo').listCatalog(table, orgId(c), unit) });
+    });
+    org.post(`/${path}`, guard('resource.write', { anyUnit: true }), async (c) => {
+      const input = create.parse(await readJson(c)) as { unit_id: string };
+      unitWrite(c, 'resource.write', input.unit_id);
+      const row = await c.get('repo').createCatalog(table, orgId(c), input);
+      await audit(c, { action: `${table}.create`, resourceType: table, resourceId: String(row.id), result: 'success', unitId: input.unit_id });
+      return c.json(row, 201);
+    });
+    org.patch(`/${path}/:id`, guard('resource.write', { anyUnit: true }), async (c) => {
+      const id = idParam(c);
+      const row = await c.get('repo').updateCatalog(table, orgId(c), id, patch.parse(await readJson(c)));
+      if (!row) throw new HttpError(404, 'Not found');
+      await audit(c, { action: `${table}.update`, resourceType: table, resourceId: id, result: 'success', unitId: String(row.unit_id) });
+      return c.json(row);
+    });
+  }
+
+  // ---- serviços ----
+  org.get('/services', guard('service.read', { anyUnit: true }), async (c) =>
+    c.json({ items: await c.get('repo').listCatalog('services', orgId(c)) }));
+  org.post('/services', guard('service.write'), async (c) => {
+    const row = await c.get('repo').createCatalog('services', orgId(c), serviceCreate.parse(await readJson(c)));
+    await audit(c, { action: 'service.create', resourceType: 'service', resourceId: String(row.id), result: 'success' });
+    return c.json(row, 201);
+  });
+  org.patch('/services/:id', guard('service.write'), async (c) => {
+    const id = idParam(c);
+    const row = await c.get('repo').updateCatalog('services', orgId(c), id, servicePatch.parse(await readJson(c)));
+    if (!row) throw new HttpError(404, 'Not found');
+    await audit(c, { action: 'service.update', resourceType: 'service', resourceId: id, result: 'success' });
+    return c.json(row);
+  });
+  org.post('/services/:id/requirements', guard('service.write'), async (c) => {
+    const id = idParam(c);
+    const { resource_type } = z.object({ resource_type: z.enum(['professional', 'room', 'equipment']) }).strict().parse(await readJson(c));
+    await c.get('repo').addServiceRequirement(orgId(c), id, resource_type);
+    await audit(c, { action: 'service.add_requirement', resourceType: 'service', resourceId: id, result: 'success' });
+    return c.json({ service_id: id, resource_type }, 201);
+  });
+
+  // ---- agenda ----
+  org.get('/events', guard('agenda.read', { anyUnit: true }), async (c) => {
+    const q = eventsQuery.parse(c.req.query());
+    return c.json({ items: await c.get('repo').listEvents(orgId(c), { unitId: q.unit_id, from: q.from, to: q.to, limit: q.limit }) });
+  });
+  org.post('/events', guard('agenda.write', { anyUnit: true }), async (c) => {
+    const b = bookBody.parse(await readJson(c));
+    unitWrite(c, 'agenda.write', b.unit_id);
+    return idempotent(c, 'events.book', b, async () => {
+      const ev = await c.get('repo').bookEvent(orgId(c), {
+        unitId: b.unit_id, kind: b.kind, serviceId: b.service_id ?? null, startsAt: b.starts_at, endsAt: b.ends_at ?? null,
+        resources: b.resources, title: b.title ?? null,
+      });
+      return { status: 201, body: ev as unknown };
+    });
+  });
+  org.post('/events/:id/cancel', guard('agenda.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = cancelBody.parse(await readJson(c));
+    return idempotent(c, `events.cancel:${id}`, b, async () => {
+      await c.get('repo').cancelEvent(orgId(c), id, b.reason);
+      return { status: 200, body: { id, status: 'cancelled' } };
+    });
+  });
+  org.post('/events/:id/reschedule', guard('agenda.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = rescheduleBody.parse(await readJson(c));
+    return idempotent(c, `events.reschedule:${id}`, b, async () => {
+      const ev = await c.get('repo').rescheduleEvent(orgId(c), id, b.starts_at, b.ends_at ?? null);
+      return { status: 201, body: ev as unknown };
+    });
   });
 
   app.route('/api/org', org);

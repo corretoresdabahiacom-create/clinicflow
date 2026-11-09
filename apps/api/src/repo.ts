@@ -22,6 +22,18 @@ export type IdemRecord = {
   responseStatus: number | null; responseBody: unknown;
 };
 
+export type CatalogTable = 'professionals' | 'rooms' | 'equipment' | 'services';
+export type Row = Record<string, unknown>;
+export type SchedEvent = {
+  id: string; organization_id: string; unit_id: string; kind: string; service_id: string | null; status: string;
+  starts_at: string; ends_at: string; title: string | null; rescheduled_from: string | null; cancel_reason: string | null;
+  created_at: string;
+};
+export type BookInput = {
+  unitId: string; kind: 'appointment' | 'block' | 'maintenance'; serviceId: string | null; startsAt: string; endsAt: string | null;
+  resources: { type: 'professional' | 'room' | 'equipment'; id: string }[]; title: string | null;
+};
+
 /** Acesso a dados sempre com o JWT do usuário (RLS aplicada). */
 export interface Repo {
   getContexts(): Promise<OrgContext[]>;
@@ -30,6 +42,15 @@ export interface Repo {
   listUnits(orgId: string): Promise<Unit[]>;
   createUnit(orgId: string, input: { name: string; timezone?: string }): Promise<Unit>;
   updateUnit(orgId: string, id: string, patch: Record<string, unknown>): Promise<Unit | null>;
+  listCatalog(table: CatalogTable, orgId: string, unitId?: string): Promise<Row[]>;
+  createCatalog(table: CatalogTable, orgId: string, input: Row): Promise<Row>;
+  updateCatalog(table: CatalogTable, orgId: string, id: string, patch: Row): Promise<Row | null>;
+  linkProfessionalUnit(orgId: string, professionalId: string, unitId: string): Promise<void>;
+  addServiceRequirement(orgId: string, serviceId: string, resourceType: string): Promise<void>;
+  listEvents(orgId: string, q: { unitId?: string; from: string; to: string; limit: number }): Promise<SchedEvent[]>;
+  bookEvent(orgId: string, input: BookInput): Promise<SchedEvent>;
+  cancelEvent(orgId: string, id: string, reason: string): Promise<void>;
+  rescheduleEvent(orgId: string, id: string, startsAt: string, endsAt: string | null): Promise<SchedEvent>;
   listAudit(orgId: string, limit: number, before?: number): Promise<AuditRow[]>;
   writeAudit(entry: AuditEntry): Promise<void>;
   idemBegin(p: { orgId: string; userId: string; scope: string; key: string; hash: string }):

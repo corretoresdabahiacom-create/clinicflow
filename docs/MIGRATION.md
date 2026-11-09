@@ -9,3 +9,10 @@ Aplicadas ao projeto de homologação `tbnzrwgwbmkdjinisrhl` (Supabase free) e v
 | 20261109000003_foundation_rls | ENABLE/FORCE RLS, policies, GRANTs mínimos, REVOKE de anon | `alter table … disable row level security`, `drop policy` (apenas hml) |
 
 Regras: migrations são aditivas e nunca editadas depois de aplicadas; correção = nova migration. Em produção, rollback destrutivo exige backup verificado e aprovação expressa (`docs/BACKUP_RESTORE.md`).
+
+## Fase 1B
+| Migration | Conteúdo | Rollback (apenas hml) |
+|---|---|---|
+| 20261109000004_scheduling_tables | professionals, professional_units, rooms, equipment, services, service_resource_requirements, scheduling_events, resource_allocations (EXCLUDE), appointment_status_history; extensão btree_gist | `drop table` em ordem inversa; `drop extension btree_gist` |
+| 20261109000005_scheduling_functions_rls | 8 permissões novas + backfill nos papéis de sistema, `app.system_role_permissions`, provisionamento atualizado, `has_perm_any`, triggers, RLS, RPCs | `drop function/trigger/policy`; remover permissões e role_permissions novas |
+| 20261109000006_scheduling_revoke_anon_execute | Revoga EXECUTE de PUBLIC/anon nas funções novas | `grant execute …` (não recomendado) |

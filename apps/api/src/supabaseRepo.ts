@@ -1,10 +1,29 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { AuditEntry, AuditRow, IdemRecord, Org, Repo, Unit } from './repo';
+import { HttpError } from './errors';
+import type { AuditEntry, AuditRow, BookInput, CatalogTable, IdemRecord, Org, Repo, Row, SchedEvent, Unit } from './repo';
 import type { Bindings, Deps, OrgContext, RateLimiter } from './types';
 
 const ORG_COLS = 'id,name,legal_name,cnpj,timezone,status,created_at,updated_at';
 const UNIT_COLS = 'id,name,timezone,status,created_at,updated_at';
 const AUDIT_COLS = 'id,at,organization_id,unit_id,actor_id,action,resource_type,resource_id,result,correlation_id';
+const COLS: Record<CatalogTable, string> = {
+  professionals: 'id,member_id,full_name,council,council_number,council_uf,specialty,status,created_at,updated_at',
+  rooms: 'id,unit_id,name,capacity,status,created_at,updated_at',
+  equipment: 'id,unit_id,name,status,created_at,updated_at',
+  services: 'id,name,kind,duration_minutes,buffer_before_minutes,buffer_after_minutes,status,created_at,updated_at',
+};
+const EVENT_COLS = 'id,organization_id,unit_id,kind,service_id,status,starts_at,ends_at,title,rescheduled_from,cancel_reason,created_at';
+
+/** Traduz erros do banco (códigos próprios das RPCs e SQLSTATE padrão) em erros HTTP sem vazar detalhes internos. */
+function dbFail(error: { code?: string }): never {
+  switch (error.code) {
+    case 'CF409': case '23505': case '23P01': throw new HttpError(409, 'Conflict');
+    case 'CF404': throw new HttpError(404, 'Not found');
+    case 'CF422': case '23514': case '23503': case '22023': case '22P02': case '22007': case '22008': throw new HttpError(422, 'Invalid request');
+    case '42501': throw new HttpError(403, 'Forbidden');
+    default: throw error;
+  }
+}
 const opts = { auth: { persistSession: false, autoRefreshToken: false } } as const;
 
 function userClient(env: Bindings, jwt: string): SupabaseClient {
@@ -43,6 +62,61 @@ export class SupabaseRepo implements Repo {
     const { data, error } = await this.db.from('units').update(patch).eq('organization_id', orgId).eq('id', id).select(UNIT_COLS).maybeSingle();
     if (error) throw error;
     return data as Unit | null;
+  }
+  async listCatalog(table: CatalogTable, orgId: string, unitId?: string): Promise<Row[]> {
+    let q = this.db.from(table).select(COLS[table]).eq('organization_id', orgId).order('created_at').limit(500);
+    if (unitId && (table === 'rooms' || table === 'equipment')) q = q.eq('unit_id', unitId);
+    const { data, error } = await q;
+    if (error) dbFail(error);
+    return (data ?? []) as unknown as Row[];
+  }
+  async createCatalog(table: CatalogTable, orgId: string, input: Row): Promise<Row> {
+    const { data, error } = await this.db.from(table).insert({ organization_id: orgId, ...input }).select(COLS[table]).single();
+    if (error) dbFail(error);
+    return data as unknown as Row;
+  }
+  async updateCatalog(table: CatalogTable, orgId: string, id: string, patch: Row): Promise<Row | null> {
+    const { data, error } = await this.db.from(table).update(patch).eq('organization_id', orgId).eq('id', id).select(COLS[table]).maybeSingle();
+    if (error) dbFail(error);
+    return data as unknown as Row | null;
+  }
+  async linkProfessionalUnit(orgId: string, professionalId: string, unitId: string): Promise<void> {
+    const { error } = await this.db.from('professional_units').insert({ organization_id: orgId, professional_id: professionalId, unit_id: unitId });
+    if (error) dbFail(error);
+  }
+  async addServiceRequirement(orgId: string, serviceId: string, resourceType: string): Promise<void> {
+    const { error } = await this.db.from('service_resource_requirements').insert({ organization_id: orgId, service_id: serviceId, resource_type: resourceType });
+    if (error) dbFail(error);
+  }
+  async listEvents(orgId: string, q: { unitId?: string; from: string; to: string; limit: number }): Promise<SchedEvent[]> {
+    let b = this.db.from('scheduling_events').select(EVENT_COLS).eq('organization_id', orgId)
+      .lt('starts_at', q.to).gt('ends_at', q.from).order('starts_at').limit(q.limit);
+    if (q.unitId) b = b.eq('unit_id', q.unitId);
+    const { data, error } = await b;
+    if (error) dbFail(error);
+    return (data ?? []) as unknown as SchedEvent[];
+  }
+  private async eventById(orgId: string, id: string): Promise<SchedEvent> {
+    const { data, error } = await this.db.from('scheduling_events').select(EVENT_COLS).eq('organization_id', orgId).eq('id', id).single();
+    if (error) dbFail(error);
+    return data as unknown as SchedEvent;
+  }
+  async bookEvent(orgId: string, i: BookInput): Promise<SchedEvent> {
+    const { data, error } = await this.db.rpc('rpc_book_event', {
+      p_org: orgId, p_unit: i.unitId, p_kind: i.kind, p_service: i.serviceId, p_starts: i.startsAt, p_ends: i.endsAt,
+      p_resources: i.resources, p_title: i.title,
+    });
+    if (error) dbFail(error);
+    return this.eventById(orgId, data as string);
+  }
+  async cancelEvent(orgId: string, id: string, reason: string): Promise<void> {
+    const { error } = await this.db.rpc('rpc_cancel_event', { p_org: orgId, p_event: id, p_reason: reason });
+    if (error) dbFail(error);
+  }
+  async rescheduleEvent(orgId: string, id: string, startsAt: string, endsAt: string | null): Promise<SchedEvent> {
+    const { data, error } = await this.db.rpc('rpc_reschedule_event', { p_org: orgId, p_event: id, p_starts: startsAt, p_ends: endsAt });
+    if (error) dbFail(error);
+    return this.eventById(orgId, data as string);
   }
   async listAudit(orgId: string, limit: number, before?: number): Promise<AuditRow[]> {
     let q = this.db.from('audit_logs').select(AUDIT_COLS).eq('organization_id', orgId).order('id', { ascending: false }).limit(limit);
