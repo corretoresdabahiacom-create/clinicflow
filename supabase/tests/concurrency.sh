@@ -86,5 +86,34 @@ out=$(mktemp); for i in $(seq 10); do ( resch "$(at "2027-07-01 08:00:00" $((i*3
 chk "remarcações efetivas (a original só pode ser movida uma vez)" "$(count OK "$R")" 1
 chk "eventos 'rescheduled' ativos a partir do original" "$($Q -At -c "select count(*) from public.scheduling_events where rescheduled_from='$EV2' and status='scheduled'")" 1
 
+par() { # $1 = bloco plpgsql (como usuário autenticado); imprime OK ou sqlstate
+  $Q -At <<SQL 2>&1 | sed -n "s/.*NOTICE:  //p" | head -1
+select set_config('request.jwt.claims', '{"sub":"$USR","role":"authenticated"}', false);
+set role authenticated;
+do \$\$ begin $1 raise notice 'OK'; exception when others then raise notice '%', sqlstate; end \$\$;
+SQL
+}
+par_n() { local out; out=$(mktemp); for i in $(seq "$1"); do ( par "$2" >> "$out" ) & done; wait; cat "$out"; rm -f "$out"; }
+
+echo "== C6: $N check-ins simultâneos do mesmo agendamento"
+read -r PAT EVC <<<"$($Q -At -F' ' <<SQL
+do \$\$ begin perform set_config('request.jwt.claims', '{"sub":"$USR","role":"authenticated"}', false); end \$\$;
+set role authenticated;
+with p as (insert into public.patients (organization_id, full_name, birth_date) values ('$ORG','Paciente Concorrente','1990-01-01') returning id),
+e as (select public.rpc_book_event_for_patient('$ORG','$UNIT','$SVC', date_trunc('hour', now()) + interval '1 hour', null, '$RES'::jsonb, (select id from p)) as id)
+select (select id from p), e.id from e;
+SQL
+)"
+R=$(par_n "$N" "perform public.rpc_check_in('$ORG','$EVC');")
+chk "check-ins efetivos" "$(count OK "$R")" 1
+chk "duplicados 409" "$(count CF409 "$R")" $((N-1))
+chk "linhas de check-in" "$($Q -At -c "select count(*) from public.patient_checkins where event_id='$EVC'")" 1
+
+echo "== C7: $N cadastros simultâneos com o mesmo CPF (hash)"
+HASH=$(printf 'a%.0s' $(seq 64))
+R=$(par_n "$N" "insert into public.patients (organization_id, full_name, birth_date, cpf_hash, cpf_masked) values ('$ORG','Mesmo CPF','1980-02-02','$HASH','***.***.***-00');")
+chk "cadastros efetivos" "$(count OK "$R")" 1
+chk "duplicados 23505" "$(count 23505 "$R")" $((N-1))
+
 [ "$fail" -eq 0 ] && echo "CONCURRENCY_OK" || echo "CONCURRENCY_FAIL"
 exit "$fail"

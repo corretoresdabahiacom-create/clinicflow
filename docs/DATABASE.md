@@ -22,3 +22,13 @@
 | appointment_status_history | Trilha de transições | Append-only por trigger |
 Escrita de agenda **somente** por RPC (`rpc_book_event`, `rpc_cancel_event`, `rpc_reschedule_event`), sem grants de INSERT/UPDATE nas tabelas de agenda. Auditoria e histórico são gravados na mesma transação.
 Códigos de erro das RPCs: CF409 conflito/estado, CF404 não encontrado (inclui não-membro), CF422 inválido, 42501 sem permissão.
+
+## Fase 1C — justificativa tabela a tabela
+| Tabela | Por quê | Decisões |
+|---|---|---|
+| patients | Cadastro administrativo mínimo | Sem endereço/RG/prontuário. **CPF não é guardado em claro**: `cpf_hash` (HMAC-SHA256 com chave só no Worker, escopo por organização) + `cpf_masked`. Único por organização. Sem DELETE (apenas `status`). `created_by` forçado pelo banco |
+| patient_consents | Consentimentos LGPD por finalidade | Append-only; autoria forçada (`recorded_by = auth.uid()`); o estado vigente é o último registro por finalidade |
+| patient_guardianships | Responsável → dependente com validade e revogação | Par ativo único; imutável exceto validade/revogação; sem DELETE |
+| patient_identity_links | Conta de usuário ↔ paciente | Escrita só por RPC (confirmação pela recepção); 1 conta ativa por paciente e 1 paciente ativo por conta; revogável; sem DELETE |
+| patient_checkins | Chegada do paciente | Append-only; 1 por agendamento; só por RPC; janela de 3h antes do início até o fim |
+`scheduling_events.patient_id` agora tem FK composta; só pode passar de nulo para um paciente (nunca trocar/remover). Titular (conta vinculada) e responsável ativo enxergam o próprio cadastro/dependentes por RLS (`app.patient_self_access`); não enxergam agenda (portal é 1E).

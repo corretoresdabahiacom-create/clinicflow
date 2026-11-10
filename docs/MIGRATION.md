@@ -16,3 +16,10 @@ Regras: migrations são aditivas e nunca editadas depois de aplicadas; correçã
 | 20261109000004_scheduling_tables | professionals, professional_units, rooms, equipment, services, service_resource_requirements, scheduling_events, resource_allocations (EXCLUDE), appointment_status_history; extensão btree_gist | `drop table` em ordem inversa; `drop extension btree_gist` |
 | 20261109000005_scheduling_functions_rls | 8 permissões novas + backfill nos papéis de sistema, `app.system_role_permissions`, provisionamento atualizado, `has_perm_any`, triggers, RLS, RPCs | `drop function/trigger/policy`; remover permissões e role_permissions novas |
 | 20261109000006_scheduling_revoke_anon_execute | Revoga EXECUTE de PUBLIC/anon nas funções novas | `grant execute …` (não recomendado) |
+
+## Fase 1C
+| Migration | Conteúdo | Rollback (apenas hml) |
+|---|---|---|
+| 20261110000007_patients_tables | patients, patient_consents, patient_guardianships, patient_identity_links, patient_checkins; FK composta em scheduling_events.patient_id | `alter table scheduling_events drop constraint scheduling_events_patient_fk`; `drop table` em ordem inversa |
+| 20261110000008_patients_functions_rls | permissões patient.read/write e checkin.write + backfill, RLS, guardas, RPCs (agendar com paciente, remarcar preservando paciente, check-in, vincular/revogar conta) | `drop function/policy/trigger`; remover permissões |
+Nota: rascunhos anteriores de 1C (nunca aplicados nem commitados) foram descartados do repositório.

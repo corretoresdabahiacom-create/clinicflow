@@ -1,5 +1,5 @@
 import { HttpError } from '../src/errors';
-import type { AuditEntry, BookInput, IdemRecord, Repo, Row, SchedEvent, Unit } from '../src/repo';
+import type { AuditEntry, BookInput, Consent, Guardianship, IdemRecord, Repo, Row, SchedEvent, Unit } from '../src/repo';
 import type { Bindings, Deps, OrgContext, RateLimiter } from '../src/types';
 
 export const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -12,6 +12,7 @@ export const env: Bindings = {
   SUPABASE_ANON_KEY: 'anon',
   APP_ENV: 'hml',
   EXPECTED_PROJECT_REF: 'abcdefghij',
+  CPF_HMAC_KEY: 'test-only-key-0123456789-0123456789-abcdef',
 };
 
 const ctx = (org: string, permissions: string[], unit_scopes: OrgContext['unit_scopes'] = [], status = 'active'): OrgContext => ({
@@ -20,13 +21,14 @@ const ctx = (org: string, permissions: string[], unit_scopes: OrgContext['unit_s
 });
 
 export const OWNER = ['org.read', 'org.manage', 'unit.read', 'unit.write', 'member.read', 'member.manage', 'role.read', 'role.manage', 'audit.read',
-  'professional.read', 'professional.write', 'resource.read', 'resource.write', 'service.read', 'service.write', 'agenda.read', 'agenda.write'];
-export const FRONTDESK = ['org.read', 'unit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read', 'agenda.write'];
+  'professional.read', 'professional.write', 'resource.read', 'resource.write', 'service.read', 'service.write', 'agenda.read', 'agenda.write',
+  'patient.read', 'patient.write', 'checkin.write'];
+export const FRONTDESK = ['org.read', 'unit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read', 'agenda.write', 'patient.read', 'patient.write', 'checkin.write'];
 export const READONLY_AGENDA = ['org.read', 'unit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read'];
 export const RECEPTION = ['org.read', 'unit.read'];
 
 export type World = {
-  units: Unit[]; events: SchedEvent[]; busy: { res: string; from: number; to: number; ev: string }[]; catalog: Record<string, Row[]>; audits: AuditEntry[]; calls: string[]; idem: Map<string, IdemRecord & { key: string }>; failNextCreate: boolean;
+  units: Unit[]; events: SchedEvent[]; consents: Consent[]; guardians: Guardianship[]; links: { id: string; patient: string; user: string; revoked: boolean }[]; checkins: Set<string>; busy: { res: string; from: number; to: number; ev: string }[]; catalog: Record<string, Row[]>; audits: AuditEntry[]; calls: string[]; idem: Map<string, IdemRecord & { key: string }>; failNextCreate: boolean;
 };
 
 export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
@@ -46,7 +48,7 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
       { id: UNIT_1, name: 'Unidade 1', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
       { id: UNIT_2, name: 'Unidade 2', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
     ],
-    events: [], busy: [], catalog: {}, audits: [], calls: [], idem: new Map(), failNextCreate: false,
+    events: [], consents: [], guardians: [], links: [], checkins: new Set(), busy: [], catalog: {}, audits: [], calls: [], idem: new Map(), failNextCreate: false,
   };
   let seq = 100;
 
@@ -66,6 +68,7 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
       async updateUnit(_o, id, patch) { const x = world.units.find((r) => r.id === id); if (!x) return null; Object.assign(x, patch); return x; },
       async listCatalog(table, _o, unit) { return (world.catalog[table] ?? []).filter((r) => !unit || r.unit_id === unit); },
       async createCatalog(table, _o, input) {
+        if (table === 'patients' && input.cpf_hash && (world.catalog.patients ?? []).some((p) => p.cpf_hash === input.cpf_hash)) throw new HttpError(409, 'Conflict');
         const row = { id: `55555555-5555-4555-8555-${String(++seq).padStart(12, '0')}`, status: 'active', ...input };
         (world.catalog[table] ??= []).push(row); return row;
       },
@@ -78,7 +81,7 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
         const from = Date.parse(i.startsAt), to = i.endsAt ? Date.parse(i.endsAt) : from + 30 * 60_000;
         for (const r of i.resources) if (world.busy.some((b) => b.res === r.id && from < b.to && to > b.from)) throw new HttpError(409, 'Conflict');
         const ev: SchedEvent = { id: `66666666-6666-4666-8666-${String(++seq).padStart(12, '0')}`, organization_id: ORG_A, unit_id: i.unitId, kind: i.kind,
-          service_id: i.serviceId, status: 'scheduled', starts_at: i.startsAt, ends_at: new Date(to).toISOString(), title: i.title, rescheduled_from: null, cancel_reason: null, created_at: 't' };
+          service_id: i.serviceId, patient_id: null, status: 'scheduled', starts_at: i.startsAt, ends_at: new Date(to).toISOString(), title: i.title, rescheduled_from: null, cancel_reason: null, created_at: 't' };
         world.events.push(ev); for (const r of i.resources) world.busy.push({ res: r.id, from, to, ev: ev.id }); return ev;
       },
       async cancelEvent(_o, id, reason) {
@@ -95,6 +98,37 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
         ev.status = 'cancelled'; ev.cancel_reason = 'rescheduled'; world.busy = world.busy.filter((b) => b.ev !== id);
         const n: SchedEvent = { ...ev, id: `66666666-6666-4666-8666-${String(++seq).padStart(12, '0')}`, status: 'scheduled', cancel_reason: null, starts_at: startsAt, ends_at: new Date(to).toISOString(), rescheduled_from: id };
         world.events.push(n); for (const m of mine) world.busy.push({ res: m.res, from, to, ev: n.id }); return n;
+      },
+      async listPatients(_o, q) {
+        return (world.catalog.patients ?? []).filter((p) => (!q.q || String(p.full_name).toLowerCase().startsWith(q.q.toLowerCase()))
+          && (!q.cpfHash || p.cpf_hash === q.cpfHash) && (!q.birthDate || p.birth_date === q.birthDate))
+          .map(({ cpf_hash: _h, ...r }) => r).slice(q.offset, q.offset + q.limit);
+      },
+      async getPatient(_o, id) { const p = (world.catalog.patients ?? []).find((x) => x.id === id); if (!p) return null; const { cpf_hash: _h, ...r } = p; return r; },
+      async listConsents(_o, pid) { return world.consents.filter((c) => c.patient_id === pid); },
+      async addConsent(_o, pid, i) { const c: Consent = { id: crypto.randomUUID(), patient_id: pid, recorded_at: 't', ...i }; world.consents.push(c); return c; },
+      async listGuardianships(_o, pid) { return world.guardians.filter((g) => g.guardian_patient_id === pid || g.dependent_patient_id === pid); },
+      async addGuardianship(_o, i) {
+        if (i.guardianId === i.dependentId) throw new HttpError(422, 'Invalid request');
+        const g: Guardianship = { id: crypto.randomUUID(), guardian_patient_id: i.guardianId, dependent_patient_id: i.dependentId, relationship: i.relationship, valid_from: 't', valid_to: i.validTo, revoked_at: null };
+        world.guardians.push(g); return g;
+      },
+      async revokeGuardianship(_o, id) { const g = world.guardians.find((x) => x.id === id && !x.revoked_at); if (!g) return false; g.revoked_at = 't'; return true; },
+      async linkPatientAccount(_o, patient, user) {
+        if (world.links.some((l) => !l.revoked && (l.patient === patient || l.user === user))) throw new HttpError(409, 'Conflict');
+        const l = { id: crypto.randomUUID(), patient, user, revoked: false }; world.links.push(l); return l.id;
+      },
+      async revokePatientLink(_o, id) { const l = world.links.find((x) => x.id === id && !x.revoked); if (!l) throw new HttpError(404, 'Not found'); l.revoked = true; },
+      async bookEventForPatient(o, patientId, i) {
+        if (!(world.catalog.patients ?? []).some((p) => p.id === patientId && p.status === 'active')) throw new HttpError(404, 'Not found');
+        const ev = await (repoFor(token).bookEvent(o, i)); ev.patient_id = patientId; return ev;
+      },
+      async checkIn(_o, id) {
+        world.calls.push('checkIn');
+        const ev = world.events.find((e) => e.id === id); if (!ev) throw new HttpError(404, 'Not found');
+        if (ev.status !== 'scheduled' || world.checkins.has(id)) throw new HttpError(409, 'Conflict');
+        if (!ev.patient_id) throw new HttpError(422, 'Invalid request');
+        world.checkins.add(id); return crypto.randomUUID();
       },
       async listAudit() { return []; },
       async writeAudit(e) { world.audits.push(e); },

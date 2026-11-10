@@ -19,3 +19,8 @@ RLS 43/43 (rls_isolation.sql), contrato repo 14/14 (repo_contract.sql), API 22/2
 - `concurrency.sh`: 30 conexões simultâneas confirmadas (1 reserva/29 conflitos; 30 disjuntas = 30 reservas; 60 sobrepostas aleatórias sem sobreposição ativa; 30 cancelamentos = 1; remarcações concorrentes = 1). Executado 4 vezes; controle negativo sem a constraint falha como esperado.
 - hml (Supabase): smoke de 9 verificações (agendar, conflito, remarcar, cancelar, médico bloqueado, escrita direta negada, anon sem execute).
 - API: 13 testes novos (35 no total).
+
+## Resultados reais (Fase 1C)
+- `patients_identity.sql`: 10 grupos (permissões, isolamento, CPF-hash único, colunas protegidas, consentimentos append-only, responsáveis, vínculo de conta, expiração/revogação, agendar/remarcar com paciente, check-in) — Postgres 16 local.
+- `concurrency.sh` (+C6, C7): 30 check-ins simultâneos = 1; 30 cadastros com o mesmo CPF = 1.
+- hml: smoke 10 verificações. API: 49 testes (14 novos de pacientes + cpf).

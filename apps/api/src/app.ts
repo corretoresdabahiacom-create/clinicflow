@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import { secureHeaders } from 'hono/secure-headers';
 import { z, ZodError } from 'zod';
 import { validateConfig } from './config';
+import { hashCpf, isValidCpf, maskCpf, normalizeCpf } from './cpf';
 import { HttpError } from './errors';
 import { runIdempotent, sha256, validateIdempotencyKey } from './idempotency';
 import type { Bindings, Deps, OrgContext, Variables } from './types';
@@ -17,6 +18,7 @@ const tz = z.string().refine((v) => {
 const name = z.string().trim().min(2).max(200);
 const nonEmpty = (o: object) => Object.keys(o).length > 0;
 
+const instantLike = () => z.string().datetime({ offset: true });
 const unitCreate = z.object({ name, timezone: tz.optional() }).strict();
 const unitPatch = z.object({ name: name.optional(), timezone: tz.optional(), status: z.enum(['active', 'inactive']).optional() })
   .strict().refine(nonEmpty, 'empty patch');
@@ -26,6 +28,32 @@ const orgPatch = z.object({
   cnpj: z.string().regex(/^\d{14}$/).nullable().optional(),
   timezone: tz.optional(),
 }).strict().refine(nonEmpty, 'empty patch');
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((v) => {
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(v) && v >= '1900-01-01' && d.getTime() <= Date.now();
+}, 'invalid or future date');
+const cpfInput = z.string().transform(normalizeCpf).refine(isValidCpf, 'invalid cpf');
+const phone = z.string().regex(/^\d{10,13}$/);
+const patientCreate = z.object({
+  full_name: name, social_name: name.optional(), birth_date: isoDate, cpf: cpfInput.optional(),
+  phone: phone.optional(), email: z.string().trim().email().max(254).optional(),
+  confirm_possible_duplicate: z.boolean().optional(),
+}).strict();
+const patientPatch = z.object({
+  full_name: name.optional(), social_name: name.nullable().optional(), birth_date: isoDate.optional(), cpf: cpfInput.nullable().optional(),
+  phone: phone.nullable().optional(), email: z.string().trim().email().max(254).nullable().optional(), status: z.enum(['active', 'inactive']).optional(),
+}).strict().refine(nonEmpty, 'empty patch');
+const patientQuery = z.object({
+  q: z.string().trim().min(2).max(100).optional(), cpf: cpfInput.optional(), birth_date: isoDate.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30), offset: z.coerce.number().int().min(0).max(1000).default(0),
+}).refine((q) => !!(q.q || q.cpf || q.birth_date), 'at least one filter (q, cpf, birth_date) is required');
+const consentBody = z.object({
+  purpose: z.enum(['care_data', 'communication', 'data_sharing', 'research']), granted: z.boolean(), source: z.enum(['in_person', 'portal', 'phone']),
+}).strict();
+const guardianBody = z.object({
+  guardian_patient_id: uuid, relationship: z.enum(['parent', 'legal_guardian', 'curator', 'other']), valid_to: instantLike().optional(),
+}).strict();
+const linkBody = z.object({ user_id: uuid }).strict();
 const council = z.enum(['CRM', 'COREN', 'CRF', 'CRP', 'CREFITO', 'CRN', 'OUTRO']);
 const professionalCreate = z.object({
   full_name: name, member_id: uuid.optional(),
@@ -57,8 +85,8 @@ const resourceRef = z.object({ type: z.enum(['professional', 'room', 'equipment'
 const bookBody = z.object({
   unit_id: uuid, kind: z.enum(['appointment', 'block', 'maintenance']).default('appointment'),
   service_id: uuid.optional(), starts_at: instant, ends_at: instant.optional(),
-  resources: z.array(resourceRef).min(1).max(20), title: z.string().trim().min(2).max(200).optional(),
-}).strict();
+  resources: z.array(resourceRef).min(1).max(20), title: z.string().trim().min(2).max(200).optional(), patient_id: uuid.optional(),
+}).strict().refine((b) => !b.patient_id || b.kind === 'appointment', 'patient_id only for appointments');
 const cancelBody = z.object({ reason: z.string().trim().min(3).max(300) }).strict();
 const rescheduleBody = z.object({ starts_at: instant, ends_at: instant.optional() }).strict();
 const eventsQuery = z.object({ unit_id: uuid.optional(), from: instant, to: instant, limit: z.coerce.number().int().min(1).max(500).default(200) })
@@ -324,6 +352,88 @@ export function createApp(deps: Deps) {
     return c.json({ service_id: id, resource_type }, 201);
   });
 
+  // ---- pacientes (cadastro administrativo; CPF só como HMAC + máscara) ----
+  // Defesa em profundidade: o hash do CPF nunca sai da API, mesmo que o repositório o devolva.
+  const pub = (row: Record<string, unknown>) => { const { cpf_hash: _h, ...rest } = row; return rest; };
+  const cpfKey = (c: Ctx) => {
+    const k = c.env.CPF_HMAC_KEY;
+    if (!k || k.length < 32) throw new HttpError(503, 'CPF protection key not configured');
+    return k;
+  };
+  org.get('/patients', guard('patient.read', { anyUnit: true }), async (c) => {
+    const q = patientQuery.parse(c.req.query());
+    const cpfHash = q.cpf ? await hashCpf(cpfKey(c), orgId(c), q.cpf) : undefined;
+    return c.json({ items: (await c.get('repo').listPatients(orgId(c), { q: q.q, cpfHash, birthDate: q.birth_date, limit: q.limit, offset: q.offset })).map(pub) });
+  });
+  org.post('/patients', guard('patient.write', { anyUnit: true }), async (c) => {
+    const { cpf, confirm_possible_duplicate, ...rest } = patientCreate.parse(await readJson(c));
+    const repo = c.get('repo');
+    if (!confirm_possible_duplicate) {
+      const dups = await repo.listPatients(orgId(c), { q: rest.full_name, birthDate: rest.birth_date, limit: 5, offset: 0 });
+      if (dups.some((d) => String(d.full_name).toLowerCase() === rest.full_name.toLowerCase())) {
+        throw new HttpError(409, 'Possible duplicate patient', 'same name and birth date exists; resend with confirm_possible_duplicate=true');
+      }
+    }
+    const input: Record<string, unknown> = { ...rest };
+    if (cpf) { input.cpf_hash = await hashCpf(cpfKey(c), orgId(c), cpf); input.cpf_masked = maskCpf(cpf); }
+    const row = await repo.createCatalog('patients', orgId(c), input);
+    await audit(c, { action: 'patient.create', resourceType: 'patient', resourceId: String(row.id), result: 'success' });
+    return c.json(pub(row), 201);
+  });
+  org.get('/patients/:id', guard('patient.read', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const row = await c.get('repo').getPatient(orgId(c), id);
+    if (!row) throw new HttpError(404, 'Not found');
+    await audit(c, { action: 'patient.read', resourceType: 'patient', resourceId: id, result: 'success' });
+    return c.json(pub(row));
+  });
+  org.patch('/patients/:id', guard('patient.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const { cpf, ...rest } = patientPatch.parse(await readJson(c));
+    const patch: Record<string, unknown> = { ...rest };
+    if (cpf === null) { patch.cpf_hash = null; patch.cpf_masked = null; }
+    else if (cpf) { patch.cpf_hash = await hashCpf(cpfKey(c), orgId(c), cpf); patch.cpf_masked = maskCpf(cpf); }
+    const row = await c.get('repo').updateCatalog('patients', orgId(c), id, patch);
+    if (!row) throw new HttpError(404, 'Not found');
+    await audit(c, { action: 'patient.update', resourceType: 'patient', resourceId: id, result: 'success' });
+    return c.json(pub(row));
+  });
+  org.get('/patients/:id/consents', guard('patient.read', { anyUnit: true }), async (c) =>
+    c.json({ items: await c.get('repo').listConsents(orgId(c), idParam(c)) }));
+  org.post('/patients/:id/consents', guard('patient.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const row = await c.get('repo').addConsent(orgId(c), id, consentBody.parse(await readJson(c)));
+    await audit(c, { action: 'patient.consent', resourceType: 'patient', resourceId: id, result: 'success' });
+    return c.json(row, 201);
+  });
+  org.get('/patients/:id/guardians', guard('patient.read', { anyUnit: true }), async (c) =>
+    c.json({ items: await c.get('repo').listGuardianships(orgId(c), idParam(c)) }));
+  org.post('/patients/:id/guardians', guard('patient.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const b = guardianBody.parse(await readJson(c));
+    const row = await c.get('repo').addGuardianship(orgId(c), { guardianId: b.guardian_patient_id, dependentId: id, relationship: b.relationship, validTo: b.valid_to ?? null });
+    await audit(c, { action: 'patient.add_guardian', resourceType: 'patient', resourceId: id, result: 'success' });
+    return c.json(row, 201);
+  });
+  org.post('/guardianships/:id/revoke', guard('patient.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    if (!(await c.get('repo').revokeGuardianship(orgId(c), id))) throw new HttpError(404, 'Not found');
+    await audit(c, { action: 'patient.revoke_guardian', resourceType: 'guardianship', resourceId: id, result: 'success' });
+    return c.json({ id, revoked: true });
+  });
+  org.post('/patients/:id/account-link', guard('patient.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const b = linkBody.parse(await readJson(c));
+    return idempotent(c, `patients.link:${id}`, b, async () => ({
+      status: 201, body: { id: await c.get('repo').linkPatientAccount(orgId(c), id, b.user_id), patient_id: id } as unknown,
+    }));
+  });
+  org.post('/account-links/:id/revoke', guard('patient.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    await c.get('repo').revokePatientLink(orgId(c), id);
+    return c.json({ id, revoked: true });
+  });
+
   // ---- agenda ----
   org.get('/events', guard('agenda.read', { anyUnit: true }), async (c) => {
     const q = eventsQuery.parse(c.req.query());
@@ -333,10 +443,13 @@ export function createApp(deps: Deps) {
     const b = bookBody.parse(await readJson(c));
     unitWrite(c, 'agenda.write', b.unit_id);
     return idempotent(c, 'events.book', b, async () => {
-      const ev = await c.get('repo').bookEvent(orgId(c), {
+      const input = {
         unitId: b.unit_id, kind: b.kind, serviceId: b.service_id ?? null, startsAt: b.starts_at, endsAt: b.ends_at ?? null,
         resources: b.resources, title: b.title ?? null,
-      });
+      };
+      const ev = b.patient_id
+        ? await c.get('repo').bookEventForPatient(orgId(c), b.patient_id, input)
+        : await c.get('repo').bookEvent(orgId(c), input);
       return { status: 201, body: ev as unknown };
     });
   });
@@ -346,6 +459,12 @@ export function createApp(deps: Deps) {
       await c.get('repo').cancelEvent(orgId(c), id, b.reason);
       return { status: 200, body: { id, status: 'cancelled' } };
     });
+  });
+  org.post('/events/:id/check-in', guard('checkin.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    return idempotent(c, `events.checkin:${id}`, {}, async () => ({
+      status: 201, body: { id: await c.get('repo').checkIn(orgId(c), id), event_id: id } as unknown,
+    }));
   });
   org.post('/events/:id/reschedule', guard('agenda.write', { anyUnit: true }), async (c) => {
     const id = idParam(c); const b = rescheduleBody.parse(await readJson(c));

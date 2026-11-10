@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { HttpError } from './errors';
-import type { AuditEntry, AuditRow, BookInput, CatalogTable, IdemRecord, Org, Repo, Row, SchedEvent, Unit } from './repo';
+import type { AuditEntry, AuditRow, BookInput, CatalogTable, Consent, Guardianship, PatientQuery, IdemRecord, Org, Repo, Row, SchedEvent, Unit } from './repo';
 import type { Bindings, Deps, OrgContext, RateLimiter } from './types';
 
 const ORG_COLS = 'id,name,legal_name,cnpj,timezone,status,created_at,updated_at';
@@ -10,9 +10,10 @@ const COLS: Record<CatalogTable, string> = {
   professionals: 'id,member_id,full_name,council,council_number,council_uf,specialty,status,created_at,updated_at',
   rooms: 'id,unit_id,name,capacity,status,created_at,updated_at',
   equipment: 'id,unit_id,name,status,created_at,updated_at',
+  patients: 'id,full_name,social_name,birth_date,cpf_masked,phone,email,status,created_at,updated_at',
   services: 'id,name,kind,duration_minutes,buffer_before_minutes,buffer_after_minutes,status,created_at,updated_at',
 };
-const EVENT_COLS = 'id,organization_id,unit_id,kind,service_id,status,starts_at,ends_at,title,rescheduled_from,cancel_reason,created_at';
+const EVENT_COLS = 'id,organization_id,unit_id,kind,service_id,patient_id,status,starts_at,ends_at,title,rescheduled_from,cancel_reason,created_at';
 
 /** Traduz erros do banco (códigos próprios das RPCs e SQLSTATE padrão) em erros HTTP sem vazar detalhes internos. */
 function dbFail(error: { code?: string }): never {
@@ -117,6 +118,73 @@ export class SupabaseRepo implements Repo {
     const { data, error } = await this.db.rpc('rpc_reschedule_event', { p_org: orgId, p_event: id, p_starts: startsAt, p_ends: endsAt });
     if (error) dbFail(error);
     return this.eventById(orgId, data as string);
+  }
+  async listPatients(orgId: string, q: PatientQuery): Promise<Row[]> {
+    let b = this.db.from('patients').select(COLS.patients).eq('organization_id', orgId);
+    if (q.q) b = b.ilike('full_name', `${q.q.replace(/[\\%_]/g, (m) => '\\' + m)}%`);
+    if (q.cpfHash) b = b.eq('cpf_hash', q.cpfHash);
+    if (q.birthDate) b = b.eq('birth_date', q.birthDate);
+    const { data, error } = await b.order('full_name').order('id').range(q.offset, q.offset + q.limit - 1);
+    if (error) dbFail(error);
+    return (data ?? []) as unknown as Row[];
+  }
+  async getPatient(orgId: string, id: string): Promise<Row | null> {
+    const { data, error } = await this.db.from('patients').select(COLS.patients).eq('organization_id', orgId).eq('id', id).maybeSingle();
+    if (error) dbFail(error);
+    return data as unknown as Row | null;
+  }
+  async listConsents(orgId: string, patientId: string): Promise<Consent[]> {
+    const { data, error } = await this.db.from('patient_consents').select('id,patient_id,purpose,granted,source,recorded_at')
+      .eq('organization_id', orgId).eq('patient_id', patientId).order('recorded_at', { ascending: false }).limit(200);
+    if (error) dbFail(error);
+    return (data ?? []) as Consent[];
+  }
+  async addConsent(orgId: string, patientId: string, i: { purpose: string; granted: boolean; source: string }): Promise<Consent> {
+    const { data, error } = await this.db.from('patient_consents').insert({ organization_id: orgId, patient_id: patientId, ...i })
+      .select('id,patient_id,purpose,granted,source,recorded_at').single();
+    if (error) dbFail(error);
+    return data as Consent;
+  }
+  async listGuardianships(orgId: string, patientId: string): Promise<Guardianship[]> {
+    const { data, error } = await this.db.from('patient_guardianships')
+      .select('id,guardian_patient_id,dependent_patient_id,relationship,valid_from,valid_to,revoked_at')
+      .eq('organization_id', orgId).or(`guardian_patient_id.eq.${patientId},dependent_patient_id.eq.${patientId}`).limit(200);
+    if (error) dbFail(error);
+    return (data ?? []) as Guardianship[];
+  }
+  async addGuardianship(orgId: string, i: { guardianId: string; dependentId: string; relationship: string; validTo: string | null }): Promise<Guardianship> {
+    const { data, error } = await this.db.from('patient_guardianships').insert({
+      organization_id: orgId, guardian_patient_id: i.guardianId, dependent_patient_id: i.dependentId, relationship: i.relationship, valid_to: i.validTo,
+    }).select('id,guardian_patient_id,dependent_patient_id,relationship,valid_from,valid_to,revoked_at').single();
+    if (error) dbFail(error);
+    return data as Guardianship;
+  }
+  async revokeGuardianship(orgId: string, id: string): Promise<boolean> {
+    const { data, error } = await this.db.from('patient_guardianships').update({ revoked_at: new Date().toISOString() })
+      .eq('organization_id', orgId).eq('id', id).is('revoked_at', null).select('id');
+    if (error) dbFail(error);
+    return (data ?? []).length === 1;
+  }
+  async linkPatientAccount(orgId: string, patientId: string, userId: string): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_link_patient_account', { p_org: orgId, p_patient: patientId, p_user: userId });
+    if (error) dbFail(error);
+    return data as string;
+  }
+  async revokePatientLink(orgId: string, linkId: string): Promise<void> {
+    const { error } = await this.db.rpc('rpc_revoke_patient_link', { p_org: orgId, p_link: linkId });
+    if (error) dbFail(error);
+  }
+  async bookEventForPatient(orgId: string, patientId: string, i: BookInput): Promise<SchedEvent> {
+    const { data, error } = await this.db.rpc('rpc_book_event_for_patient', {
+      p_org: orgId, p_unit: i.unitId, p_service: i.serviceId, p_starts: i.startsAt, p_ends: i.endsAt, p_resources: i.resources, p_patient: patientId,
+    });
+    if (error) dbFail(error);
+    return this.eventById(orgId, data as string);
+  }
+  async checkIn(orgId: string, eventId: string): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_check_in', { p_org: orgId, p_event: eventId });
+    if (error) dbFail(error);
+    return data as string;
   }
   async listAudit(orgId: string, limit: number, before?: number): Promise<AuditRow[]> {
     let q = this.db.from('audit_logs').select(AUDIT_COLS).eq('organization_id', orgId).order('id', { ascending: false }).limit(limit);

@@ -22,16 +22,23 @@ export type IdemRecord = {
   responseStatus: number | null; responseBody: unknown;
 };
 
-export type CatalogTable = 'professionals' | 'rooms' | 'equipment' | 'services';
+export type CatalogTable = 'professionals' | 'rooms' | 'equipment' | 'services' | 'patients';
 export type Row = Record<string, unknown>;
 export type SchedEvent = {
-  id: string; organization_id: string; unit_id: string; kind: string; service_id: string | null; status: string;
+  id: string; organization_id: string; unit_id: string; kind: string; service_id: string | null; patient_id: string | null; status: string;
   starts_at: string; ends_at: string; title: string | null; rescheduled_from: string | null; cancel_reason: string | null;
   created_at: string;
 };
 export type BookInput = {
   unitId: string; kind: 'appointment' | 'block' | 'maintenance'; serviceId: string | null; startsAt: string; endsAt: string | null;
   resources: { type: 'professional' | 'room' | 'equipment'; id: string }[]; title: string | null;
+};
+
+export type PatientQuery = { q?: string; cpfHash?: string; birthDate?: string; limit: number; offset: number };
+export type Consent = { id: string; patient_id: string; purpose: string; granted: boolean; source: string; recorded_at: string };
+export type Guardianship = {
+  id: string; guardian_patient_id: string; dependent_patient_id: string; relationship: string;
+  valid_from: string; valid_to: string | null; revoked_at: string | null;
 };
 
 /** Acesso a dados sempre com o JWT do usuário (RLS aplicada). */
@@ -51,6 +58,17 @@ export interface Repo {
   bookEvent(orgId: string, input: BookInput): Promise<SchedEvent>;
   cancelEvent(orgId: string, id: string, reason: string): Promise<void>;
   rescheduleEvent(orgId: string, id: string, startsAt: string, endsAt: string | null): Promise<SchedEvent>;
+  listPatients(orgId: string, q: PatientQuery): Promise<Row[]>;
+  getPatient(orgId: string, id: string): Promise<Row | null>;
+  listConsents(orgId: string, patientId: string): Promise<Consent[]>;
+  addConsent(orgId: string, patientId: string, input: { purpose: string; granted: boolean; source: string }): Promise<Consent>;
+  listGuardianships(orgId: string, patientId: string): Promise<Guardianship[]>;
+  addGuardianship(orgId: string, input: { guardianId: string; dependentId: string; relationship: string; validTo: string | null }): Promise<Guardianship>;
+  revokeGuardianship(orgId: string, id: string): Promise<boolean>;
+  linkPatientAccount(orgId: string, patientId: string, userId: string): Promise<string>;
+  revokePatientLink(orgId: string, linkId: string): Promise<void>;
+  bookEventForPatient(orgId: string, patientId: string, input: BookInput): Promise<SchedEvent>;
+  checkIn(orgId: string, eventId: string): Promise<string>;
   listAudit(orgId: string, limit: number, before?: number): Promise<AuditRow[]>;
   writeAudit(entry: AuditEntry): Promise<void>;
   idemBegin(p: { orgId: string; userId: string; scope: string; key: string; hash: string }):

@@ -11,3 +11,6 @@
 | Segurança | logs, IP, user agent | Usuário | Não | Auditoria | A validar | Auditor | Supabase/Cloudflare |
 
 Pendências: DPA e localização de dados de cada fornecedor (transferência internacional), encarregado (DPO), RIPD, política de privacidade, retenção por categoria (ver `CLINICAL_DATA_GOVERNANCE.md`).
+
+## Dados pessoais na 1C (sintéticos)
+nome, nome social, data de nascimento, telefone, e-mail (texto), CPF (somente HMAC + 2 últimos dígitos). Base legal/consentimento por finalidade em `patient_consents`. Acesso de leitura individual registrado em `audit_logs` (`patient.read`), sem PII no log. Exportação, eliminação/anonimização e retenção ainda NÃO implementadas.

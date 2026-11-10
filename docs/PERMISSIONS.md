@@ -22,3 +22,6 @@ Chaves de permissão seguem `domínio.ação` (ex.: `agenda.read`, `clinical.not
 
 ## Implementado na 1B (chaves)
 professional.read/write, resource.read/write, service.read/write, agenda.read/write. Leitura de profissionais/serviços vale em qualquer escopo; escrita exige escopo organizacional (salas/equipamentos/agenda: por unidade). **Não implementado:** agenda "própria" do médico (só leitura da unidade inteira).
+
+## Implementado na 1C
+patient.read, patient.write, checkin.write → proprietário, admin, gerente de unidade e recepção. **Médico, enfermeiro, técnico, financeiro e auditor NÃO leem pacientes ainda** (a matriz pede acesso por vínculo assistencial e finalidade, que só existe a partir da 1D). Pacientes são entidades da organização: permissão em qualquer escopo vale (recepção de uma unidade cadastra pacientes da organização).

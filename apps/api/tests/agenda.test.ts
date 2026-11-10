@@ -111,7 +111,7 @@ describe('agenda', () => {
     const p = (body: unknown, key: string) => call(app, '/api/org/events', { token: 'tok-front', org: ORG_A, method: 'POST', body, key });
     expect((await p(book({ starts_at: '2027-03-01T13:00:00' }), 'key-val-0001')).status).toBe(422);
     expect((await p(book({ resources: [] }), 'key-val-0002')).status).toBe(422);
-    expect((await p(book({ patient_id: ROOM }), 'key-val-0003')).status).toBe(422);
+    expect((await p(book({ foo: ROOM }), 'key-val-0003')).status).toBe(422);
     expect((await p(book({ unit_id: 'x' }), 'key-val-0004')).status).toBe(422);
     const q = (qs: string) => call(app, `/api/org/events?${qs}`, { token: 'tok-front', org: ORG_A });
     expect((await q('from=2027-03-01T00:00:00Z&to=2027-03-02T00:00:00Z')).status).toBe(200);

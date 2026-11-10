@@ -6,6 +6,7 @@ export type Bindings = {
   SUPABASE_SERVICE_ROLE_KEY?: string; // segredo; só rate limit/provisionamento (ADR-003)
   APP_ENV: string;
   EXPECTED_PROJECT_REF: string;
+  CPF_HMAC_KEY?: string; // segredo (>= 32 caracteres) para o HMAC do CPF; nunca no repositório
   ALLOWED_ORIGIN?: string; // apenas para desenvolvimento local
 };
 
