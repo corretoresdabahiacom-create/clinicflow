@@ -181,6 +181,91 @@ export class SupabaseRepo implements Repo {
     const { error } = await this.db.rpc('rpc_revoke_patient_link', { p_org: orgId, p_link: linkId });
     if (error) dbFail(error);
   }
+  // ---- 1D ----
+  async listCareRelationships(orgId: string, q: { patientId?: string; professionalId?: string; limit: number; offset: number }): Promise<Row[]> {
+    let qb = this.db.from('care_relationships')
+      .select('id,patient_id,professional_id,source,event_id,reason,valid_from,valid_to,revoked_at,revoke_reason,created_at')
+      .eq('organization_id', orgId);
+    if (q.patientId) qb = qb.eq('patient_id', q.patientId);
+    if (q.professionalId) qb = qb.eq('professional_id', q.professionalId);
+    const { data, error } = await qb.order('created_at', { ascending: false }).range(q.offset, q.offset + q.limit - 1);
+    if (error) dbFail(error);
+    return (data ?? []) as unknown as Row[];
+  }
+  async assignCare(orgId: string, patientId: string, professionalId: string, validTo: string | null, reason: string): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_assign_care_relationship',
+      { p_org: orgId, p_patient: patientId, p_professional: professionalId, p_valid_to: validTo, p_reason: reason });
+    if (error) dbFail(error);
+    return data as string;
+  }
+  async revokeCare(orgId: string, linkId: string, reason: string): Promise<void> {
+    const { error } = await this.db.rpc('rpc_revoke_care_relationship', { p_org: orgId, p_link: linkId, p_reason: reason });
+    if (error) dbFail(error);
+  }
+  async createClinicalRecord(orgId: string, patientId: string, i: { kind: string; title: string; body: string; eventId: string | null }): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_create_clinical_record',
+      { p_org: orgId, p_patient: patientId, p_kind: i.kind, p_title: i.title, p_body: i.body, p_event: i.eventId });
+    if (error) dbFail(error);
+    return data as string;
+  }
+  async updateClinicalDraft(orgId: string, recordId: string, title: string, body: string): Promise<void> {
+    const { error } = await this.db.rpc('rpc_update_clinical_draft', { p_org: orgId, p_record: recordId, p_title: title, p_body: body });
+    if (error) dbFail(error);
+  }
+  async finalizeClinicalRecord(orgId: string, recordId: string): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_finalize_clinical_record', { p_org: orgId, p_record: recordId });
+    if (error) dbFail(error);
+    return data as string;
+  }
+  async addClinicalAddendum(orgId: string, recordId: string, reason: string, body: string): Promise<number> {
+    const { data, error } = await this.db.rpc('rpc_add_clinical_addendum', { p_org: orgId, p_record: recordId, p_reason: reason, p_body: body });
+    if (error) dbFail(error);
+    return data as number;
+  }
+  async listClinicalRecords(orgId: string, patientId: string, purpose: string, limit: number, offset: number): Promise<Row[]> {
+    const { data, error } = await this.db.rpc('rpc_list_clinical_records',
+      { p_org: orgId, p_patient: patientId, p_purpose: purpose, p_limit: limit, p_offset: offset });
+    if (error) dbFail(error);
+    return (data ?? []) as Row[];
+  }
+  async getClinicalRecord(orgId: string, recordId: string, purpose: string): Promise<Row> {
+    const { data, error } = await this.db.rpc('rpc_get_clinical_record', { p_org: orgId, p_record: recordId, p_purpose: purpose });
+    if (error) dbFail(error);
+    return data as Row;
+  }
+  async emergencyAccess(orgId: string, patientId: string, justification: string): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_emergency_access', { p_org: orgId, p_patient: patientId, p_justification: justification });
+    if (error) dbFail(error);
+    return data as string;
+  }
+  async reviewEmergencyAccess(orgId: string, grantId: string, outcome: string, note: string | null): Promise<void> {
+    const { error } = await this.db.rpc('rpc_review_emergency_access', { p_org: orgId, p_grant: grantId, p_outcome: outcome, p_note: note });
+    if (error) dbFail(error);
+  }
+  async verifyClinicalRecord(orgId: string, recordId: string): Promise<boolean> {
+    const { data, error } = await this.db.rpc('rpc_verify_clinical_record_integrity', { p_org: orgId, p_record: recordId });
+    if (error) dbFail(error);
+    return data === true;
+  }
+  async listEmergencyGrants(orgId: string, q: { pendingOnly: boolean; limit: number }): Promise<Row[]> {
+    let qb = this.db.from('emergency_access_grants')
+      .select('id,patient_id,professional_id,justification,granted_at,expires_at,reviewed_at,review_outcome,review_note')
+      .eq('organization_id', orgId);
+    if (q.pendingOnly) qb = qb.is('reviewed_at', null);
+    const { data, error } = await qb.order('granted_at', { ascending: false }).limit(q.limit);
+    if (error) dbFail(error);
+    return (data ?? []) as unknown as Row[];
+  }
+  async listAccessLogs(orgId: string, q: { patientId?: string; before?: number; limit: number }): Promise<Row[]> {
+    let qb = this.db.from('data_access_logs')
+      .select('id,at,patient_id,actor_id,professional_id,action,resource_type,resource_id,purpose,basis,relationship_id,grant_id,correlation_id')
+      .eq('organization_id', orgId);
+    if (q.patientId) qb = qb.eq('patient_id', q.patientId);
+    if (q.before) qb = qb.lt('id', q.before);
+    const { data, error } = await qb.order('id', { ascending: false }).limit(q.limit);
+    if (error) dbFail(error);
+    return (data ?? []) as unknown as Row[];
+  }
   async bookEventForPatient(orgId: string, patientId: string, i: BookInput): Promise<SchedEvent> {
     const { data, error } = await this.db.rpc('rpc_book_event_for_patient', {
       p_org: orgId, p_unit: i.unitId, p_service: i.serviceId, p_starts: i.startsAt, p_ends: i.endsAt, p_resources: i.resources, p_patient: patientId,

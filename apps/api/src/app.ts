@@ -54,6 +54,23 @@ const guardianBody = z.object({
   guardian_patient_id: uuid, relationship: z.enum(['parent', 'legal_guardian', 'curator', 'other']), valid_to: instantLike().optional(),
 }).strict();
 const linkBody = z.object({ user_id: uuid }).strict();
+const purposeEnum = z.enum(['care', 'emergency']);
+const pageLimit = z.coerce.number().int().min(1).max(100).default(50);
+const recordCreate = z.object({
+  kind: z.enum(['anamnesis', 'evolution', 'conduct']), title: z.string().trim().min(2).max(200),
+  body: z.string().trim().min(1).max(20000), event_id: uuid.optional(),
+}).strict();
+const recordPatch = z.object({ title: z.string().trim().min(2).max(200), body: z.string().trim().min(1).max(20000) }).strict();
+const addendumBody = z.object({ reason: z.string().trim().min(3).max(300), body: z.string().trim().min(1).max(10000) }).strict();
+const emergencyBody = z.object({ justification: z.string().trim().min(20).max(1000) }).strict();
+const reviewBody = z.object({ outcome: z.enum(['justified', 'not_justified']), note: z.string().trim().max(500).optional() }).strict();
+const careAssignBody = z.object({ professional_id: uuid, valid_to: instantLike().optional(), reason: z.string().trim().min(5).max(300) }).strict();
+const careRevokeBody = z.object({ reason: z.string().trim().min(3).max(300) }).strict();
+const clinicalListQuery = z.object({ purpose: purposeEnum, limit: pageLimit, offset: z.coerce.number().int().min(0).max(1000).default(0) });
+const clinicalGetQuery = z.object({ purpose: purposeEnum });
+const careQuery = z.object({ patient_id: uuid.optional(), professional_id: uuid.optional(), limit: pageLimit, offset: z.coerce.number().int().min(0).max(1000).default(0) });
+const grantsQuery = z.object({ pending: z.enum(['true', 'false']).default('true'), limit: pageLimit });
+const accessLogQuery = z.object({ patient_id: uuid.optional(), before: z.coerce.number().int().positive().optional(), limit: pageLimit });
 const council = z.enum(['CRM', 'COREN', 'CRF', 'CRP', 'CREFITO', 'CRN', 'OUTRO']);
 const professionalCreate = z.object({
   full_name: name, member_id: uuid.optional(),
@@ -138,6 +155,8 @@ export function createApp(deps: Deps) {
     await next();
   });
   app.use('*', secureHeaders());
+  // Respostas da API (inclusive prontuário) nunca são guardadas por cache de navegador/proxy.
+  app.use('/api/*', async (c, next) => { await next(); c.header('Cache-Control', 'no-store'); });
   app.use('/api/*', cors({
     origin: (origin, c) => (c.env.ALLOWED_ORIGIN && origin === c.env.ALLOWED_ORIGIN ? origin : ''),
     allowHeaders: ['Authorization', 'Content-Type', 'X-Organization-Id', 'Idempotency-Key', 'X-Request-Id'],
@@ -204,7 +223,8 @@ export function createApp(deps: Deps) {
     await next();
   });
 
-  const guard = (perm: string, opts: { unitParam?: string; anyUnit?: boolean } = {}): MiddlewareHandler<Env> =>
+  // perm pode ser uma lista: basta uma (o banco ainda aplica RLS/vínculo)
+  const guard = (permIn: string | string[], opts: { unitParam?: string; anyUnit?: boolean } = {}): MiddlewareHandler<Env> =>
     async (c, next) => {
       const ctx = c.get('org')!;
       let unitId: string | undefined;
@@ -212,9 +232,10 @@ export function createApp(deps: Deps) {
         unitId = c.req.param(opts.unitParam);
         if (!uuid.safeParse(unitId).success) throw new HttpError(400, 'Invalid id');
       }
-      const allowed = opts.anyUnit ? canAnyUnit(ctx, perm) : can(ctx, perm, unitId);
+      const perms = Array.isArray(permIn) ? permIn : [permIn];
+      const allowed = perms.some((perm) => (opts.anyUnit ? canAnyUnit(ctx, perm) : can(ctx, perm, unitId)));
       if (!allowed) {
-        await audit(c, { action: `denied:${perm}`, resourceType: 'permission', resourceId: perm, result: 'denied', unitId });
+        await audit(c, { action: `denied:${perms.join('|')}`, resourceType: 'permission', resourceId: perms.join('|'), result: 'denied', unitId });
         throw new HttpError(403, 'Forbidden');
       }
       await next();
@@ -358,7 +379,7 @@ export function createApp(deps: Deps) {
     if (!Number.isInteger(v) || v < 1 || v > 32767) throw new HttpError(503, 'CPF protection key version invalid');
     return v;
   };
-  org.get('/patients', guard('patient.read', { anyUnit: true }), async (c) => {
+  org.get('/patients', guard(['patient.read', 'clinical.read'], { anyUnit: true }), async (c) => {
     const q = patientQuery.parse(c.req.query());
     const cpfHash = q.cpf ? await hashCpf(cpfKey(c), orgId(c), q.cpf) : undefined;
     return c.json({ items: (await c.get('repo').listPatients(orgId(c), { q: q.q, cpfHash, birthDate: q.birth_date, limit: q.limit, offset: q.offset })).map(pub) });
@@ -377,7 +398,7 @@ export function createApp(deps: Deps) {
     const row = await repo.createCatalog('patients', orgId(c), input);
     return c.json(pub(row), 201);
   });
-  org.get('/patients/:id', guard('patient.read', { anyUnit: true }), async (c) => {
+  org.get('/patients/:id', guard(['patient.read', 'clinical.read'], { anyUnit: true }), async (c) => {
     const id = idParam(c);
     const row = await c.get('repo').getPatient(orgId(c), id);
     if (!row) throw new HttpError(404, 'Not found');
@@ -425,6 +446,83 @@ export function createApp(deps: Deps) {
     const id = idParam(c);
     await c.get('repo').revokePatientLink(orgId(c), id);
     return c.json({ id, revoked: true });
+  });
+
+  // ---- 1D: vínculo assistencial ----
+  org.get('/care-relationships', guard('care.read', { anyUnit: true }), async (c) => {
+    const q = careQuery.parse(c.req.query());
+    return c.json({ items: await c.get('repo').listCareRelationships(orgId(c), { patientId: q.patient_id, professionalId: q.professional_id, limit: q.limit, offset: q.offset }) });
+  });
+  org.post('/patients/:id/care-relationships', guard('care.assign', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const b = careAssignBody.parse(await readJson(c));
+    return idempotent(c, `care.assign:${id}`, b, async () => ({
+      status: 201, body: { id: await c.get('repo').assignCare(orgId(c), id, b.professional_id, b.valid_to ?? null, b.reason), patient_id: id } as unknown,
+    }));
+  });
+  org.post('/care-relationships/:id/revoke', guard('care.assign', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    const b = careRevokeBody.parse(await readJson(c));
+    await c.get('repo').revokeCare(orgId(c), id, b.reason);
+    return c.json({ id, revoked: true });
+  });
+
+  // ---- 1D: prontuário (o banco valida vínculo/finalidade e registra o acesso; o Worker nunca loga conteúdo) ----
+  org.get('/patients/:id/clinical-records', guard('clinical.read', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const q = clinicalListQuery.parse(c.req.query());
+    return c.json({ items: await c.get('repo').listClinicalRecords(orgId(c), id, q.purpose, q.limit, q.offset) });
+  });
+  org.post('/patients/:id/clinical-records', guard('clinical.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = recordCreate.parse(await readJson(c));
+    return idempotent(c, `clinical.create:${id}`, b, async () => ({
+      status: 201, body: { id: await c.get('repo').createClinicalRecord(orgId(c), id, { kind: b.kind, title: b.title, body: b.body, eventId: b.event_id ?? null }), patient_id: id } as unknown,
+    }));
+  });
+  org.get('/clinical-records/:id', guard('clinical.read', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const q = clinicalGetQuery.parse(c.req.query());
+    return c.json(await c.get('repo').getClinicalRecord(orgId(c), id, q.purpose));
+  });
+  org.patch('/clinical-records/:id', guard('clinical.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = recordPatch.parse(await readJson(c));
+    await c.get('repo').updateClinicalDraft(orgId(c), id, b.title, b.body);
+    return c.json({ id, updated: true });
+  });
+  org.post('/clinical-records/:id/finalize', guard('clinical.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    return idempotent(c, `clinical.finalize:${id}`, {}, async () => ({
+      status: 200, body: { id, status: 'finalized', content_hash: await c.get('repo').finalizeClinicalRecord(orgId(c), id) } as unknown,
+    }));
+  });
+  org.post('/clinical-records/:id/addenda', guard('clinical.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = addendumBody.parse(await readJson(c));
+    return idempotent(c, `clinical.addendum:${id}`, b, async () => ({
+      status: 201, body: { record_id: id, seq: await c.get('repo').addClinicalAddendum(orgId(c), id, b.reason, b.body) } as unknown,
+    }));
+  });
+  org.post('/clinical-records/:id/verify', guard('clinical.audit', { anyUnit: true }), async (c) => {
+    const id = idParam(c);
+    return c.json({ id, intact: await c.get('repo').verifyClinicalRecord(orgId(c), id) });
+  });
+
+  // ---- 1D: acesso de emergência e log de acesso ----
+  org.post('/patients/:id/emergency-access', guard('clinical.emergency', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = emergencyBody.parse(await readJson(c));
+    return idempotent(c, `clinical.emergency:${id}`, b, async () => ({
+      status: 201, body: { id: await c.get('repo').emergencyAccess(orgId(c), id, b.justification), patient_id: id, valid_for_minutes: 120 } as unknown,
+    }));
+  });
+  org.get('/emergency-access', guard('clinical.audit', { anyUnit: true }), async (c) => {
+    const q = grantsQuery.parse(c.req.query());
+    return c.json({ items: await c.get('repo').listEmergencyGrants(orgId(c), { pendingOnly: q.pending === 'true', limit: q.limit }) });
+  });
+  org.post('/emergency-access/:id/review', guard('clinical.audit', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = reviewBody.parse(await readJson(c));
+    await c.get('repo').reviewEmergencyAccess(orgId(c), id, b.outcome, b.note ?? null);
+    return c.json({ id, reviewed: true, outcome: b.outcome });
+  });
+  org.get('/clinical-access-logs', guard('clinical.audit', { anyUnit: true }), async (c) => {
+    const q = accessLogQuery.parse(c.req.query());
+    return c.json({ items: await c.get('repo').listAccessLogs(orgId(c), { patientId: q.patient_id, before: q.before, limit: q.limit }) });
   });
 
   // ---- agenda ----

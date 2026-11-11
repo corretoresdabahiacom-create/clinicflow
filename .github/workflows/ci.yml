@@ -45,7 +45,7 @@ jobs:
           P="psql -v ON_ERROR_STOP=1 -q -d cf"
           $P -f supabase/tests/local_pg_setup.sql
           for f in supabase/migrations/*.sql; do $P -f "$f"; done
-          for t in rls_isolation repo_contract scheduling_rules patients_identity hardening; do
+          for t in rls_isolation repo_contract scheduling_rules patients_identity hardening clinical; do
             out=$($P -f supabase/tests/$t.sql 2>&1 || true); echo "$out" | grep -E "TESTS_OK|FAIL"
             echo "$out" | grep -q "TESTS_OK" || { echo "$t falhou"; echo "$out"; exit 1; }
           done

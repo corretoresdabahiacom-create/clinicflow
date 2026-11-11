@@ -25,10 +25,13 @@ export const OWNER = ['org.read', 'org.manage', 'unit.read', 'unit.write', 'memb
   'patient.read', 'patient.write', 'checkin.write'];
 export const FRONTDESK = ['org.read', 'unit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read', 'agenda.write', 'patient.read', 'patient.write', 'checkin.write'];
 export const READONLY_AGENDA = ['org.read', 'unit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read'];
+export const DOCTOR = ['org.read', 'unit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read', 'clinical.read', 'clinical.write', 'clinical.emergency'];
+export const AUDITOR = ['org.read', 'unit.read', 'member.read', 'role.read', 'audit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read', 'care.read', 'clinical.audit'];
+export const CARE_ADMIN = ['org.read', 'unit.read', 'patient.read', 'care.read', 'care.assign'];
 export const RECEPTION = ['org.read', 'unit.read'];
 
 export type World = {
-  units: Unit[]; events: SchedEvent[]; consents: Consent[]; guardians: Guardianship[]; links: { id: string; patient: string; user: string; revoked: boolean }[]; checkins: Set<string>; busy: { res: string; from: number; to: number; ev: string }[]; catalog: Record<string, Row[]>; audits: AuditEntry[]; calls: string[]; metas: { correlationId: string; ip: string | null; userAgent: string | null }[]; idem: Map<string, IdemRecord & { key: string; lockedAt: number }>; failNextCreate: boolean;
+  units: Unit[]; events: SchedEvent[]; consents: Consent[]; guardians: Guardianship[]; links: { id: string; patient: string; user: string; revoked: boolean }[]; checkins: Set<string>; busy: { res: string; from: number; to: number; ev: string }[]; catalog: Record<string, Row[]>; audits: AuditEntry[]; calls: string[]; metas: { correlationId: string; ip: string | null; userAgent: string | null }[]; idem: Map<string, IdemRecord & { key: string; lockedAt: number }>; failNextCreate: boolean; clinicalError: HttpError | null; clinicalArgs: { fn: string; args: unknown[] }[];
 };
 
 export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
@@ -41,6 +44,9 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
     'tok-front1': { userId: 'u-front1', contexts: [ctx(ORG_A, ['org.read', 'unit.read'], [{ unit_id: UNIT_1, permissions: ['agenda.read', 'agenda.write', 'unit.read'] }])] },
     'tok-other': { userId: 'u-other', contexts: [ctx(ORG_B, OWNER)] },
     'tok-susp': { userId: 'u-susp', contexts: [ctx(ORG_A, OWNER, [], 'suspended')] },
+    'tok-doctor': { userId: 'u-doctor', contexts: [ctx(ORG_A, DOCTOR)] },
+    'tok-auditor': { userId: 'u-auditor', contexts: [ctx(ORG_A, AUDITOR)] },
+    'tok-careadmin': { userId: 'u-careadmin', contexts: [ctx(ORG_A, CARE_ADMIN)] },
     'tok-none': { userId: 'u-none', contexts: [] },
   };
   const world: World = {
@@ -48,10 +54,15 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
       { id: UNIT_1, name: 'Unidade 1', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
       { id: UNIT_2, name: 'Unidade 2', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
     ],
-    events: [], consents: [], guardians: [], links: [], checkins: new Set(), busy: [], catalog: {}, audits: [], calls: [], metas: [], idem: new Map(), failNextCreate: false,
+    events: [], consents: [], guardians: [], links: [], checkins: new Set(), busy: [], catalog: {}, audits: [], calls: [], metas: [], idem: new Map(), failNextCreate: false, clinicalError: null, clinicalArgs: [],
   };
   let seq = 100;
 
+  const clin = <T>(fn: string, args: unknown[], ret: T): T => {
+    world.calls.push(fn); world.clinicalArgs.push({ fn, args });
+    if (world.clinicalError) throw world.clinicalError;
+    return ret;
+  };
   const repoFor = (token: string): Repo => {
     const u = users[token]!;
     return {
@@ -114,6 +125,21 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
         world.guardians.push(g); return g;
       },
       async revokeGuardianship(_o, id) { const g = world.guardians.find((x) => x.id === id && !x.revoked_at); if (!g) return false; g.revoked_at = 't'; return true; },
+      // ---- 1D (o fake só registra chamadas; vínculo/finalidade/imutabilidade são provados no banco e no E2E) ----
+      async listCareRelationships(...a) { return clin('listCareRelationships', a, []); },
+      async assignCare(...a) { return clin('assignCare', a, '55555555-5555-4555-8555-555555555501'); },
+      async revokeCare(...a) { return clin('revokeCare', a, undefined); },
+      async createClinicalRecord(...a) { return clin('createClinicalRecord', a, '55555555-5555-4555-8555-555555555502'); },
+      async updateClinicalDraft(...a) { return clin('updateClinicalDraft', a, undefined); },
+      async finalizeClinicalRecord(...a) { return clin('finalizeClinicalRecord', a, 'a'.repeat(64)); },
+      async addClinicalAddendum(...a) { return clin('addClinicalAddendum', a, 1); },
+      async listClinicalRecords(...a) { return clin('listClinicalRecords', a, []); },
+      async getClinicalRecord(...a) { return clin('getClinicalRecord', a, { record: { id: 'r', body: 'x' }, addenda: [], integrity: 'ok' }); },
+      async emergencyAccess(...a) { return clin('emergencyAccess', a, '55555555-5555-4555-8555-555555555503'); },
+      async reviewEmergencyAccess(...a) { return clin('reviewEmergencyAccess', a, undefined); },
+      async verifyClinicalRecord(...a) { return clin('verifyClinicalRecord', a, true); },
+      async listEmergencyGrants(...a) { return clin('listEmergencyGrants', a, []); },
+      async listAccessLogs(...a) { return clin('listAccessLogs', a, []); },
       async linkPatientAccount(_o, patient, user) {
         if (world.links.some((l) => !l.revoked && (l.patient === patient || l.user === user))) throw new HttpError(409, 'Conflict');
         const l = { id: crypto.randomUUID(), patient, user, revoked: false }; world.links.push(l); return l.id;

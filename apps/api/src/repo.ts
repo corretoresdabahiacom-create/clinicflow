@@ -69,6 +69,22 @@ export interface Repo {
   revokePatientLink(orgId: string, linkId: string): Promise<void>;
   bookEventForPatient(orgId: string, patientId: string, input: BookInput): Promise<SchedEvent>;
   checkIn(orgId: string, eventId: string): Promise<string>;
+
+  // ---- 1D: vínculo assistencial, prontuário e acesso clínico (tudo por RPC; o banco decide vínculo/finalidade/registro) ----
+  listCareRelationships(orgId: string, q: { patientId?: string; professionalId?: string; limit: number; offset: number }): Promise<Row[]>;
+  assignCare(orgId: string, patientId: string, professionalId: string, validTo: string | null, reason: string): Promise<string>;
+  revokeCare(orgId: string, linkId: string, reason: string): Promise<void>;
+  createClinicalRecord(orgId: string, patientId: string, i: { kind: string; title: string; body: string; eventId: string | null }): Promise<string>;
+  updateClinicalDraft(orgId: string, recordId: string, title: string, body: string): Promise<void>;
+  finalizeClinicalRecord(orgId: string, recordId: string): Promise<string>;
+  addClinicalAddendum(orgId: string, recordId: string, reason: string, body: string): Promise<number>;
+  listClinicalRecords(orgId: string, patientId: string, purpose: string, limit: number, offset: number): Promise<Row[]>;
+  getClinicalRecord(orgId: string, recordId: string, purpose: string): Promise<Row>;
+  emergencyAccess(orgId: string, patientId: string, justification: string): Promise<string>;
+  reviewEmergencyAccess(orgId: string, grantId: string, outcome: string, note: string | null): Promise<void>;
+  verifyClinicalRecord(orgId: string, recordId: string): Promise<boolean>;
+  listEmergencyGrants(orgId: string, q: { pendingOnly: boolean; limit: number }): Promise<Row[]>;
+  listAccessLogs(orgId: string, q: { patientId?: string; before?: number; limit: number }): Promise<Row[]>;
   listAudit(orgId: string, limit: number, before?: number): Promise<AuditRow[]>;
   writeAudit(entry: AuditEntry): Promise<void>;
   idemBegin(p: { orgId: string; userId: string; scope: string; key: string; hash: string }):

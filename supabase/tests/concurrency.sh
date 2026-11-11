@@ -147,5 +147,39 @@ done
 chk "rodadas sem exatamente 1 revogação efetiva (a outra: 409, 403 ou 0 linhas)" "$both_ok" 0
 chk "rodadas que ficaram sem nenhum proprietário" "$survive_bad" 0
 
+echo "== C9: 12 adendos simultâneos no mesmo prontuário (sequência única, sem perda)"
+read -r UD OG REC <<<"$($Q -At <<'SQL' 2>&1 | sed -n 's/.*NOTICE:  IDS //p' | head -1
+do $$
+declare uo uuid := gen_random_uuid(); ud uuid := gen_random_uuid(); og uuid; rd uuid; md uuid; pr uuid; pt uuid; rec uuid;
+begin
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at)
+    select u, '00000000-0000-0000-0000-000000000000','authenticated','authenticated', u::text||'@test.invalid','',now(),now() from unnest(array[uo, ud]) u;
+  og := public.rpc_provision_organization(uo, 'Org Adendos');
+  select id into rd from public.roles where organization_id = og and key = 'doctor';
+  insert into public.organization_members (organization_id, user_id) values (og, ud) returning id into md;
+  insert into public.user_role_assignments (organization_id, member_id, role_id) values (og, md, rd);
+  insert into public.professionals (organization_id, full_name, member_id) values (og, 'Dr. Concorrente', md) returning id into pr;
+  insert into public.patients (organization_id, full_name, birth_date) values (og, 'Paciente C9', '1990-01-01') returning id into pt;
+  insert into public.care_relationships (organization_id, patient_id, professional_id, source, reason) values (og, pt, pr, 'manual', 'Vinculo de teste');
+  perform set_config('request.jwt.claims', json_build_object('sub', ud, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  rec := public.rpc_create_clinical_record(og, pt, 'evolution', 'Evolucao C9', 'Texto base');
+  perform public.rpc_finalize_clinical_record(og, rec);
+  reset role;
+  raise notice 'IDS % % %', ud, og, rec;
+end $$;
+SQL
+)"
+add_one() { $Q -At <<SQL 2>&1 | sed -n "s/.*NOTICE:  //p" | head -1
+select set_config('request.jwt.claims', '{"sub":"$UD","role":"authenticated"}', false);
+set role authenticated;
+do \$\$ begin perform public.rpc_add_clinical_addendum('$OG', '$REC', 'complemento', 'Adendo concorrente $1');
+  raise notice 'OK'; exception when others then raise notice '%', sqlstate; end \$\$;
+SQL
+}
+out=$(mktemp); for i in $(seq 12); do ( add_one "$i" >> "$out" ) & done; wait; R=$(cat "$out"); rm -f "$out"
+chk "adendos concluídos com sucesso (de 12)" "$(count OK "$R")" 12
+chk "sequências distintas 1..12 sem buracos" "$($Q -At -c "select count(distinct seq) || '/' || max(seq) || '/' || min(seq) from public.clinical_addenda where record_id = '$REC'")" "12/12/1"
+
 [ "$fail" -eq 0 ] && echo "CONCURRENCY_OK" || echo "CONCURRENCY_FAIL"
 exit "$fail"
