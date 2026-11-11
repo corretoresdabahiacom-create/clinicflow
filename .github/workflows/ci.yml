@@ -45,9 +45,34 @@ jobs:
           P="psql -v ON_ERROR_STOP=1 -q -d cf"
           $P -f supabase/tests/local_pg_setup.sql
           for f in supabase/migrations/*.sql; do $P -f "$f"; done
-          for t in rls_isolation repo_contract scheduling_rules patients_identity; do
+          for t in rls_isolation repo_contract scheduling_rules patients_identity hardening; do
             out=$($P -f supabase/tests/$t.sql 2>&1 || true); echo "$out" | grep -E "TESTS_OK|FAIL"
             echo "$out" | grep -q "TESTS_OK" || { echo "$t falhou"; echo "$out"; exit 1; }
           done
       - name: Concorrência real (30 conexões)
         run: bash supabase/tests/concurrency.sh
+
+  e2e:
+    # Worker real -> PostgREST -> Postgres (RLS) -> GoTrue, contra o Supabase LOCAL (Docker do runner). Gratuito, sem segredos.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Subir Supabase local (aplica supabase/migrations)
+        run: supabase start -x studio,imgproxy,edge-runtime,logflare,vector,mailpit,supavisor
+      - name: Teste ponta a ponta
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          E2E_SUPABASE_URL="$API_URL" E2E_ANON_KEY="$ANON_KEY" E2E_SERVICE_KEY="$SERVICE_ROLE_KEY" \
+            npm run test:e2e -w @clinicflow/api
+      - name: Parar Supabase local
+        if: always()
+        run: supabase stop --no-backup

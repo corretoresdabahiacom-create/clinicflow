@@ -107,11 +107,27 @@ describe('validação', () => {
 });
 
 describe('auditoria e idempotência', () => {
-  it('criação grava auditoria com ator/organização/correlação', async () => {
+  it('contexto da requisição (correlação, IP, user-agent) segue ao banco para a auditoria transacional; o Worker não duplica a auditoria de sucesso', async () => {
     const { deps, world } = makeDeps();
-    const r = await call(createApp(deps), '/api/org/units', { token: 'tok-owner', org: ORG_A, method: 'POST', body: { name: 'Nova Unidade' }, headers: { 'x-request-id': 'req-12345678' } });
+    const r = await call(createApp(deps), '/api/org/units', { token: 'tok-owner', org: ORG_A, method: 'POST', body: { name: 'Nova Unidade' },
+      headers: { 'x-request-id': 'req-12345678', 'cf-connecting-ip': '203.0.113.9', 'user-agent': 'ua-x' } });
     expect(r.status).toBe(201);
-    expect(world.audits.at(-1)).toMatchObject({ action: 'unit.create', result: 'success', organizationId: ORG_A, correlationId: 'req-12345678' });
+    expect(world.metas.at(-1)).toEqual({ correlationId: 'req-12345678', ip: '203.0.113.9', userAgent: 'ua-x' });
+    expect(world.audits.filter((a) => a.result === 'success')).toHaveLength(0);
+  });
+  it('chave abandonada em processing é reaberta só depois do prazo (sem execução dupla antes)', async () => {
+    const { deps, world } = makeDeps();
+    const a = createApp(deps);
+    const opts = { token: 'tok-owner', org: ORG_A, method: 'POST', body: { name: 'Presa' }, headers: { 'idempotency-key': 'key-stuck-001' } };
+    // simula queda do Worker no meio: registro criado e nunca concluído
+    const first = await call(a, '/api/org/units', opts);
+    expect(first.status).toBe(201);
+    const k = [...world.idem.keys()][0]!;
+    Object.assign(world.idem.get(k)!, { status: 'processing', responseStatus: null, responseBody: null, lockedAt: Date.now() });
+    expect((await call(a, '/api/org/units', opts)).status).toBe(409); // recém-travada: ainda pode estar em execução
+    world.idem.get(k)!.lockedAt = Date.now() - 3 * 60 * 1000;
+    expect((await call(a, '/api/org/units', opts)).status).toBe(201); // abandonada: reaberta
+    expect(world.idem.get(k)!.status).toBe('completed');
   });
   it('mesma Idempotency-Key cria uma única unidade e reaproveita a resposta', async () => {
     const { deps, world } = makeDeps();
@@ -157,5 +173,17 @@ describe('rate limit', () => {
     const app = createApp(makeDeps({ limiter: { hit: async () => { hits++; return true; } } }).deps);
     await call(app, '/api/me');
     expect(hits).toBe(0);
+  });
+});
+
+describe('validateConfig', () => {
+  const base = { SUPABASE_ANON_KEY: 'k', EXPECTED_PROJECT_REF: 'abc' };
+  it("APP_ENV=ci só aceita loopback; hml/prod continuam exigindo https e o ref esperado", async () => {
+    const { validateConfig } = await import('../src/config');
+    expect(validateConfig({ ...base, APP_ENV: 'ci', SUPABASE_URL: 'http://127.0.0.1:54321' })).toBeNull();
+    expect(validateConfig({ ...base, APP_ENV: 'ci', SUPABASE_URL: 'https://abc.supabase.co' })).toMatch(/loopback/);
+    expect(validateConfig({ ...base, APP_ENV: 'hml', SUPABASE_URL: 'http://127.0.0.1:54321' })).toMatch(/https/);
+    expect(validateConfig({ ...base, APP_ENV: 'prod', SUPABASE_URL: 'https://outro.supabase.co' })).toMatch(/EXPECTED_PROJECT_REF/);
+    expect(validateConfig({ ...base, APP_ENV: 'dev', SUPABASE_URL: 'https://abc.supabase.co' })).toBe('invalid APP_ENV');
   });
 });

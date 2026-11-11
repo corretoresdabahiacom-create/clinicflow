@@ -163,7 +163,11 @@ export function createApp(deps: Deps) {
     if (!user) throw new HttpError(401, 'Unauthorized');
     c.set('jwt', m[1]);
     c.set('userId', user.userId);
-    c.set('repo', deps.makeRepo(c.env, m[1]));
+    c.set('repo', deps.makeRepo(c.env, m[1], {
+      correlationId: c.get('requestId'),
+      ip: c.req.header('cf-connecting-ip') ?? null,
+      userAgent: (c.req.header('user-agent') ?? '').slice(0, 300) || null,
+    }));
     await next();
   };
   app.use('/api/*', auth);
@@ -227,7 +231,6 @@ export function createApp(deps: Deps) {
     const orgId = c.get('org')!.organization_id;
     const row = await c.get('repo').updateOrganization(orgId, patch);
     if (!row) throw new HttpError(404, 'Not found');
-    await audit(c, { action: 'organization.update', resourceType: 'organization', resourceId: orgId, result: 'success' });
     return c.json(row);
   });
 
@@ -239,7 +242,6 @@ export function createApp(deps: Deps) {
     const orgId = c.get('org')!.organization_id;
     const exec = async () => {
       const unit = await c.get('repo').createUnit(orgId, input);
-      await audit(c, { action: 'unit.create', resourceType: 'unit', resourceId: unit.id, result: 'success', unitId: unit.id });
       return { status: 201, body: unit as unknown };
     };
     const key = c.req.header('idempotency-key');
@@ -256,7 +258,6 @@ export function createApp(deps: Deps) {
     const patch = unitPatch.parse(await readJson(c));
     const row = await c.get('repo').updateUnit(c.get('org')!.organization_id, id, patch);
     if (!row) throw new HttpError(404, 'Not found');
-    await audit(c, { action: 'unit.update', resourceType: 'unit', resourceId: id, result: 'success', unitId: id });
     return c.json(row);
   });
 
@@ -287,14 +288,12 @@ export function createApp(deps: Deps) {
     c.json({ items: await c.get('repo').listCatalog('professionals', orgId(c)) }));
   org.post('/professionals', guard('professional.write'), async (c) => {
     const row = await c.get('repo').createCatalog('professionals', orgId(c), professionalCreate.parse(await readJson(c)));
-    await audit(c, { action: 'professional.create', resourceType: 'professional', resourceId: String(row.id), result: 'success' });
     return c.json(row, 201);
   });
   org.patch('/professionals/:id', guard('professional.write'), async (c) => {
     const id = idParam(c);
     const row = await c.get('repo').updateCatalog('professionals', orgId(c), id, professionalPatch.parse(await readJson(c)));
     if (!row) throw new HttpError(404, 'Not found');
-    await audit(c, { action: 'professional.update', resourceType: 'professional', resourceId: id, result: 'success' });
     return c.json(row);
   });
   org.post('/professionals/:id/units', guard('professional.write', { anyUnit: true }), async (c) => {
@@ -302,7 +301,6 @@ export function createApp(deps: Deps) {
     const { unit_id } = z.object({ unit_id: uuid }).strict().parse(await readJson(c));
     unitWrite(c, 'professional.write', unit_id);
     await c.get('repo').linkProfessionalUnit(orgId(c), id, unit_id);
-    await audit(c, { action: 'professional.link_unit', resourceType: 'professional', resourceId: id, result: 'success', unitId: unit_id });
     return c.json({ professional_id: id, unit_id }, 201);
   });
 
@@ -317,14 +315,12 @@ export function createApp(deps: Deps) {
       const input = create.parse(await readJson(c)) as { unit_id: string };
       unitWrite(c, 'resource.write', input.unit_id);
       const row = await c.get('repo').createCatalog(table, orgId(c), input);
-      await audit(c, { action: `${table}.create`, resourceType: table, resourceId: String(row.id), result: 'success', unitId: input.unit_id });
       return c.json(row, 201);
     });
     org.patch(`/${path}/:id`, guard('resource.write', { anyUnit: true }), async (c) => {
       const id = idParam(c);
       const row = await c.get('repo').updateCatalog(table, orgId(c), id, patch.parse(await readJson(c)));
       if (!row) throw new HttpError(404, 'Not found');
-      await audit(c, { action: `${table}.update`, resourceType: table, resourceId: id, result: 'success', unitId: String(row.unit_id) });
       return c.json(row);
     });
   }
@@ -334,21 +330,18 @@ export function createApp(deps: Deps) {
     c.json({ items: await c.get('repo').listCatalog('services', orgId(c)) }));
   org.post('/services', guard('service.write'), async (c) => {
     const row = await c.get('repo').createCatalog('services', orgId(c), serviceCreate.parse(await readJson(c)));
-    await audit(c, { action: 'service.create', resourceType: 'service', resourceId: String(row.id), result: 'success' });
     return c.json(row, 201);
   });
   org.patch('/services/:id', guard('service.write'), async (c) => {
     const id = idParam(c);
     const row = await c.get('repo').updateCatalog('services', orgId(c), id, servicePatch.parse(await readJson(c)));
     if (!row) throw new HttpError(404, 'Not found');
-    await audit(c, { action: 'service.update', resourceType: 'service', resourceId: id, result: 'success' });
     return c.json(row);
   });
   org.post('/services/:id/requirements', guard('service.write'), async (c) => {
     const id = idParam(c);
     const { resource_type } = z.object({ resource_type: z.enum(['professional', 'room', 'equipment']) }).strict().parse(await readJson(c));
     await c.get('repo').addServiceRequirement(orgId(c), id, resource_type);
-    await audit(c, { action: 'service.add_requirement', resourceType: 'service', resourceId: id, result: 'success' });
     return c.json({ service_id: id, resource_type }, 201);
   });
 
@@ -359,6 +352,11 @@ export function createApp(deps: Deps) {
     const k = c.env.CPF_HMAC_KEY;
     if (!k || k.length < 32) throw new HttpError(503, 'CPF protection key not configured');
     return k;
+  };
+  const cpfVersion = (c: Ctx) => {
+    const v = Number(c.env.CPF_HMAC_KEY_VERSION ?? '1');
+    if (!Number.isInteger(v) || v < 1 || v > 32767) throw new HttpError(503, 'CPF protection key version invalid');
+    return v;
   };
   org.get('/patients', guard('patient.read', { anyUnit: true }), async (c) => {
     const q = patientQuery.parse(c.req.query());
@@ -375,9 +373,8 @@ export function createApp(deps: Deps) {
       }
     }
     const input: Record<string, unknown> = { ...rest };
-    if (cpf) { input.cpf_hash = await hashCpf(cpfKey(c), orgId(c), cpf); input.cpf_masked = maskCpf(cpf); }
+    if (cpf) { input.cpf_hash = await hashCpf(cpfKey(c), orgId(c), cpf); input.cpf_masked = maskCpf(cpf); input.cpf_key_version = cpfVersion(c); }
     const row = await repo.createCatalog('patients', orgId(c), input);
-    await audit(c, { action: 'patient.create', resourceType: 'patient', resourceId: String(row.id), result: 'success' });
     return c.json(pub(row), 201);
   });
   org.get('/patients/:id', guard('patient.read', { anyUnit: true }), async (c) => {
@@ -392,10 +389,9 @@ export function createApp(deps: Deps) {
     const { cpf, ...rest } = patientPatch.parse(await readJson(c));
     const patch: Record<string, unknown> = { ...rest };
     if (cpf === null) { patch.cpf_hash = null; patch.cpf_masked = null; }
-    else if (cpf) { patch.cpf_hash = await hashCpf(cpfKey(c), orgId(c), cpf); patch.cpf_masked = maskCpf(cpf); }
+    else if (cpf) { patch.cpf_hash = await hashCpf(cpfKey(c), orgId(c), cpf); patch.cpf_masked = maskCpf(cpf); patch.cpf_key_version = cpfVersion(c); }
     const row = await c.get('repo').updateCatalog('patients', orgId(c), id, patch);
     if (!row) throw new HttpError(404, 'Not found');
-    await audit(c, { action: 'patient.update', resourceType: 'patient', resourceId: id, result: 'success' });
     return c.json(pub(row));
   });
   org.get('/patients/:id/consents', guard('patient.read', { anyUnit: true }), async (c) =>
@@ -403,7 +399,6 @@ export function createApp(deps: Deps) {
   org.post('/patients/:id/consents', guard('patient.write', { anyUnit: true }), async (c) => {
     const id = idParam(c);
     const row = await c.get('repo').addConsent(orgId(c), id, consentBody.parse(await readJson(c)));
-    await audit(c, { action: 'patient.consent', resourceType: 'patient', resourceId: id, result: 'success' });
     return c.json(row, 201);
   });
   org.get('/patients/:id/guardians', guard('patient.read', { anyUnit: true }), async (c) =>
@@ -412,13 +407,11 @@ export function createApp(deps: Deps) {
     const id = idParam(c);
     const b = guardianBody.parse(await readJson(c));
     const row = await c.get('repo').addGuardianship(orgId(c), { guardianId: b.guardian_patient_id, dependentId: id, relationship: b.relationship, validTo: b.valid_to ?? null });
-    await audit(c, { action: 'patient.add_guardian', resourceType: 'patient', resourceId: id, result: 'success' });
     return c.json(row, 201);
   });
   org.post('/guardianships/:id/revoke', guard('patient.write', { anyUnit: true }), async (c) => {
     const id = idParam(c);
     if (!(await c.get('repo').revokeGuardianship(orgId(c), id))) throw new HttpError(404, 'Not found');
-    await audit(c, { action: 'patient.revoke_guardian', resourceType: 'guardianship', resourceId: id, result: 'success' });
     return c.json({ id, revoked: true });
   });
   org.post('/patients/:id/account-link', guard('patient.write', { anyUnit: true }), async (c) => {

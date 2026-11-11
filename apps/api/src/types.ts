@@ -7,6 +7,7 @@ export type Bindings = {
   APP_ENV: string;
   EXPECTED_PROJECT_REF: string;
   CPF_HMAC_KEY?: string; // segredo (>= 32 caracteres) para o HMAC do CPF; nunca no repositório
+  CPF_HMAC_KEY_VERSION?: string; // inteiro 1..32767 da chave atual (gravado em patients.cpf_key_version)
   ALLOWED_ORIGIN?: string; // apenas para desenvolvimento local
 };
 
@@ -23,9 +24,12 @@ export type RateLimiter = {
   hit(bucket: string, windowSeconds: number, max: number): Promise<boolean>;
 };
 
+/** Contexto da requisição repassado ao PostgREST para a auditoria transacional (sem PII). */
+export type RequestMeta = { correlationId: string; ip: string | null; userAgent: string | null };
+
 export type Deps = {
   verifyToken(env: Bindings, jwt: string): Promise<{ userId: string } | null>;
-  makeRepo(env: Bindings, jwt: string): Repo;
+  makeRepo(env: Bindings, jwt: string, meta?: RequestMeta): Repo;
   makeRateLimiter?(env: Bindings): RateLimiter | null;
 };
 

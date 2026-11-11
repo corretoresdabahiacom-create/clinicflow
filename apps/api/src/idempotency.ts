@@ -12,6 +12,9 @@ export async function sha256(text: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Tempo máximo razoável de uma requisição; acima disso uma chave em 'processing' é considerada abandonada. */
+export const STALE_MS = 2 * 60 * 1000;
+
 export type Exec = () => Promise<{ status: number; body: unknown }>;
 
 export async function runIdempotent(
@@ -41,7 +44,8 @@ export async function runIdempotent(
   if (rec.status === 'completed') {
     return { status: rec.responseStatus ?? 200, body: rec.responseBody, replayed: true };
   }
-  if (rec.status === 'processing') throw new HttpError(409, 'Request with this key is still processing');
-  if (!(await repo.idemRestart(rec.id))) throw new HttpError(409, 'Request with this key is still processing');
+  // 'failed' reabre sempre; 'processing' só reabre se travada há mais de STALE_MS (queda do Worker no meio da execução).
+  const staleBefore = new Date(Date.now() - STALE_MS).toISOString();
+  if (!(await repo.idemRestart(rec.id, staleBefore))) throw new HttpError(409, 'Request with this key is still processing');
   return finish(rec.id);
 }

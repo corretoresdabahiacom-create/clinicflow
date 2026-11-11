@@ -115,5 +115,37 @@ R=$(par_n "$N" "insert into public.patients (organization_id, full_name, birth_d
 chk "cadastros efetivos" "$(count OK "$R")" 1
 chk "duplicados 23505" "$(count 23505 "$R")" $((N-1))
 
+echo "== C8: dois proprietários se revogando ao mesmo tempo (20 rodadas, org nova a cada rodada)"
+survive_bad=0; both_ok=0
+for r in $(seq 20); do
+  read -r UA UB AA AB OG <<<"$($Q -At <<'SQL' 2>&1 | sed -n 's/.*NOTICE:  IDS //p' | head -1
+do $$
+declare ua uuid := gen_random_uuid(); ub uuid := gen_random_uuid(); og uuid; mb uuid; aa uuid; ab uuid; ro uuid;
+begin
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at)
+    select u, '00000000-0000-0000-0000-000000000000','authenticated','authenticated', u::text||'@test.invalid','',now(),now() from unnest(array[ua, ub]) u;
+  og := public.rpc_provision_organization(ua, 'Org Owners');
+  select id into ro from public.roles where organization_id = og and key = 'owner';
+  select a.id into aa from public.user_role_assignments a join public.organization_members m on m.id = a.member_id where m.organization_id = og and m.user_id = ua;
+  insert into public.organization_members (organization_id, user_id) values (og, ub) returning id into mb;
+  insert into public.user_role_assignments (organization_id, member_id, role_id) values (og, mb, ro) returning id into ab;
+  raise notice 'IDS % % % % %', ua, ub, aa, ab, og;
+end $$;
+SQL
+)"
+  rv() { $Q -At <<SQL 2>&1 | sed -n "s/.*NOTICE:  //p" | head -1
+select set_config('request.jwt.claims', '{"sub":"$1","role":"authenticated"}', false);
+set role authenticated;
+do \$\$ declare c int; begin update public.user_role_assignments set revoked_at = now() where id = '$2';
+  get diagnostics c = row_count; raise notice '%', case when c = 1 then 'OK' else 'ZERO' end; exception when others then raise notice '%', sqlstate; end \$\$;
+SQL
+  }
+  out=$(mktemp); ( rv "$UA" "$AB" >> "$out" ) & ( rv "$UB" "$AA" >> "$out" ) & wait; R=$(cat "$out"); rm -f "$out"
+  [ "$(count OK "$R")" = 1 ] || both_ok=$((both_ok+1))
+  [ "$($Q -At -c "select count(*) from public.user_role_assignments a join public.roles r on r.id=a.role_id where a.organization_id='$OG' and r.key='owner' and a.revoked_at is null")" -ge 1 ] || survive_bad=$((survive_bad+1))
+done
+chk "rodadas sem exatamente 1 revogação efetiva (a outra: 409, 403 ou 0 linhas)" "$both_ok" 0
+chk "rodadas que ficaram sem nenhum proprietário" "$survive_bad" 0
+
 [ "$fail" -eq 0 ] && echo "CONCURRENCY_OK" || echo "CONCURRENCY_FAIL"
 exit "$fail"

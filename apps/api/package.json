@@ -6,7 +6,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

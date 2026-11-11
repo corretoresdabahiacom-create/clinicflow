@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { HttpError } from './errors';
 import type { AuditEntry, AuditRow, BookInput, CatalogTable, Consent, Guardianship, PatientQuery, IdemRecord, Org, Repo, Row, SchedEvent, Unit } from './repo';
-import type { Bindings, Deps, OrgContext, RateLimiter } from './types';
+import type { Bindings, Deps, OrgContext, RateLimiter, RequestMeta } from './types';
 
 const ORG_COLS = 'id,name,legal_name,cnpj,timezone,status,created_at,updated_at';
 const UNIT_COLS = 'id,name,timezone,status,created_at,updated_at';
@@ -27,8 +27,15 @@ function dbFail(error: { code?: string }): never {
 }
 const opts = { auth: { persistSession: false, autoRefreshToken: false } } as const;
 
-function userClient(env: Bindings, jwt: string): SupabaseClient {
-  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, { ...opts, global: { headers: { Authorization: `Bearer ${jwt}` } } });
+/** Cabeçalhos x-* são lidos pelos triggers de auditoria (request.headers); valores são saneados no banco. */
+function userClient(env: Bindings, jwt: string, meta?: RequestMeta): SupabaseClient {
+  const headers: Record<string, string> = { Authorization: `Bearer ${jwt}` };
+  if (meta) {
+    headers['x-correlation-id'] = meta.correlationId;
+    if (meta.ip) headers['x-client-ip'] = meta.ip;
+    if (meta.userAgent) headers['x-client-ua'] = encodeURIComponent(meta.userAgent).slice(0, 300);
+  }
+  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, { ...opts, global: { headers } });
 }
 
 export class SupabaseRepo implements Repo {
@@ -225,8 +232,10 @@ export class SupabaseRepo implements Repo {
     const { error } = await this.db.from('idempotency_keys').update({ status: 'failed' }).eq('id', id);
     if (error) throw error;
   }
-  async idemRestart(id: string): Promise<boolean> {
-    const { data, error } = await this.db.from('idempotency_keys').update({ status: 'processing' }).eq('id', id).eq('status', 'failed').select('id');
+  async idemRestart(id: string, staleBefore: string): Promise<boolean> {
+    const { data, error } = await this.db.from('idempotency_keys')
+      .update({ status: 'processing', locked_at: new Date().toISOString() }).eq('id', id)
+      .or(`status.eq.failed,and(status.eq.processing,locked_at.lt.${staleBefore})`).select('id');
     if (error) throw error;
     return (data ?? []).length === 1;
   }
@@ -238,7 +247,7 @@ export const realDeps: Deps = {
     if (error || !data.user) return null;
     return { userId: data.user.id };
   },
-  makeRepo: (env, jwt) => new SupabaseRepo(userClient(env, jwt)),
+  makeRepo: (env, jwt, meta) => new SupabaseRepo(userClient(env, jwt, meta)),
   makeRateLimiter(env): RateLimiter | null {
     if (!env.SUPABASE_SERVICE_ROLE_KEY) return null; // uso excepcional e restrito de service_role (ADR-003/006)
     const svc = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, opts);

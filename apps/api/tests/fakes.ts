@@ -28,7 +28,7 @@ export const READONLY_AGENDA = ['org.read', 'unit.read', 'professional.read', 'r
 export const RECEPTION = ['org.read', 'unit.read'];
 
 export type World = {
-  units: Unit[]; events: SchedEvent[]; consents: Consent[]; guardians: Guardianship[]; links: { id: string; patient: string; user: string; revoked: boolean }[]; checkins: Set<string>; busy: { res: string; from: number; to: number; ev: string }[]; catalog: Record<string, Row[]>; audits: AuditEntry[]; calls: string[]; idem: Map<string, IdemRecord & { key: string }>; failNextCreate: boolean;
+  units: Unit[]; events: SchedEvent[]; consents: Consent[]; guardians: Guardianship[]; links: { id: string; patient: string; user: string; revoked: boolean }[]; checkins: Set<string>; busy: { res: string; from: number; to: number; ev: string }[]; catalog: Record<string, Row[]>; audits: AuditEntry[]; calls: string[]; metas: { correlationId: string; ip: string | null; userAgent: string | null }[]; idem: Map<string, IdemRecord & { key: string; lockedAt: number }>; failNextCreate: boolean;
 };
 
 export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
@@ -48,7 +48,7 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
       { id: UNIT_1, name: 'Unidade 1', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
       { id: UNIT_2, name: 'Unidade 2', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
     ],
-    events: [], consents: [], guardians: [], links: [], checkins: new Set(), busy: [], catalog: {}, audits: [], calls: [], idem: new Map(), failNextCreate: false,
+    events: [], consents: [], guardians: [], links: [], checkins: new Set(), busy: [], catalog: {}, audits: [], calls: [], metas: [], idem: new Map(), failNextCreate: false,
   };
   let seq = 100;
 
@@ -136,18 +136,18 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
         const k = `${p.orgId}|${p.scope}|${p.key}`;
         const ex = world.idem.get(k);
         if (ex) return { created: false, record: ex };
-        const rec = { id: 'i' + ++seq, key: k, requestHash: p.hash, status: 'processing' as const, responseStatus: null, responseBody: null };
+        const rec = { id: 'i' + ++seq, key: k, requestHash: p.hash, status: 'processing' as const, responseStatus: null, responseBody: null, lockedAt: Date.now() };
         world.idem.set(k, rec); return { created: true, id: rec.id };
       },
       async idemComplete(id, status, body) { for (const r of world.idem.values()) if (r.id === id) Object.assign(r, { status: 'completed', responseStatus: status, responseBody: body }); },
       async idemFail(id) { for (const r of world.idem.values()) if (r.id === id) r.status = 'failed'; },
-      async idemRestart(id) { for (const r of world.idem.values()) if (r.id === id && r.status === 'failed') { r.status = 'processing'; return true; } return false; },
+      async idemRestart(id, staleBefore) { for (const r of world.idem.values()) if (r.id === id && (r.status === 'failed' || (r.status === 'processing' && r.lockedAt < Date.parse(staleBefore)))) { r.status = 'processing'; r.lockedAt = Date.now(); return true; } return false; },
     };
   };
 
   const deps: Deps = {
     async verifyToken(_e, jwt) { const u = users[jwt]; return u ? { userId: u.userId } : null; },
-    makeRepo: (_e, jwt) => repoFor(jwt),
+    makeRepo: (_e, jwt, meta) => { if (meta) world.metas.push(meta); return repoFor(jwt); },
     makeRateLimiter: () => opts.limiter ?? null,
   };
   return { deps, world };

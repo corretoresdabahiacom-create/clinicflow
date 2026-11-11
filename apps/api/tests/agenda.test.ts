@@ -37,7 +37,7 @@ describe('cadastros: permissões e validação', () => {
     const { app, world } = setup();
     const ok = await call(app, '/api/org/professionals', { token: 'tok-owner', org: ORG_A, method: 'POST', body: { full_name: 'Dra. Ana', council: 'CRM', council_number: '123', council_uf: 'BA' } });
     expect(ok.status).toBe(201);
-    expect(world.audits.some((a) => a.action === 'professional.create')).toBe(true);
+    expect(world.audits.some((a) => a.action === 'professional.create')).toBe(false); // auditoria de sucesso é do banco (trigger), testada em supabase/tests/hardening.sql
     const bad = await call(app, '/api/org/professionals', { token: 'tok-owner', org: ORG_A, method: 'POST', body: { full_name: 'Dra. Ana', organization_id: ORG_B } });
     expect(bad.status).toBe(422);
     const half = await call(app, '/api/org/professionals', { token: 'tok-owner', org: ORG_A, method: 'POST', body: { full_name: 'Dra. Ana', council: 'CRM' } });

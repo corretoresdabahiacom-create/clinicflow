@@ -53,6 +53,7 @@ describe('pacientes', () => {
     expect(JSON.stringify(body)).not.toContain('cpf_hash');
     const stored = world.catalog.patients![0]!;
     expect(String(stored.cpf_hash)).toMatch(/^[0-9a-f]{64}$/);
+    expect(stored.cpf_key_version).toBe(1);
     expect(JSON.stringify(stored)).not.toContain('52998224725');
     expect(world.audits.some((a) => JSON.stringify(a).includes('5299822'))).toBe(false);
   });

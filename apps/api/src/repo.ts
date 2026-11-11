@@ -75,6 +75,6 @@ export interface Repo {
     Promise<{ created: true; id: string } | { created: false; record: IdemRecord | null }>;
   idemComplete(id: string, status: number, body: unknown): Promise<void>;
   idemFail(id: string): Promise<void>;
-  /** Retorna true somente se a chave estava 'failed' e foi reaberta (evita execução dupla). */
-  idemRestart(id: string): Promise<boolean>;
+  /** Retorna true somente se a chave estava 'failed', ou 'processing' travada desde antes de staleBefore (ISO), e foi reaberta. */
+  idemRestart(id: string, staleBefore: string): Promise<boolean>;
 }
