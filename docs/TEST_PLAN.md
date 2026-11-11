@@ -24,3 +24,10 @@ RLS 43/43 (rls_isolation.sql), contrato repo 14/14 (repo_contract.sql), API 22/2
 - `patients_identity.sql`: 10 grupos (permissões, isolamento, CPF-hash único, colunas protegidas, consentimentos append-only, responsáveis, vínculo de conta, expiração/revogação, agendar/remarcar com paciente, check-in) — Postgres 16 local.
 - `concurrency.sh` (+C6, C7): 30 check-ins simultâneos = 1; 30 cadastros com o mesmo CPF = 1.
 - hml: smoke 10 verificações. API: 49 testes (14 novos de pacientes + cpf).
+
+## Resultados reais (Fase 1H, 2026-11-11)
+- `supabase/tests/hardening.sql`: 31 asserções (último proprietário, auditoria por trigger sem PII/valores, atomicidade, imutabilidade, purge, tomada de chave presa, versão de chave). Mutação: removendo o trigger do último owner → `FAIL H1`; removendo o trigger de auditoria → `FAIL H10`.
+- `concurrency.sh` C8: dois proprietários se revogando ao mesmo tempo, 20 rodadas, 3 execuções: 0 rodadas sem exatamente 1 revogação efetiva e 0 organizações sem proprietário. Mutação: sem o advisory lock, 18/20 rodadas deixam a organização sem proprietário.
+- Suítes anteriores (RLS 43, contrato 14, agenda 21, pacientes 10 grupos, concorrência C1–C7) seguem verdes com a migration 009.
+- API: 51 testes (mocks). **E2E** (`apps/api/e2e`, 6 cenários) roda no job `e2e` do CI contra o Supabase local do CLI (Auth+PostgREST reais): autenticação, cadastros, idempotência + auditoria com correlação/IP, paciente/CPF, agenda (reserva, 409, replay, check-in), isolamento entre organizações, último owner via JWT real. Passou no CI (run 43008578341).
+- Smoke em hml (rollback): último owner bloqueado (CF409), trigger de auditoria, purge, coluna cpf_key_version.

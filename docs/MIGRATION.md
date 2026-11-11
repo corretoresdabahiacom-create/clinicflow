@@ -23,3 +23,8 @@ Regras: migrations são aditivas e nunca editadas depois de aplicadas; correçã
 | 20261110000007_patients_tables | patients, patient_consents, patient_guardianships, patient_identity_links, patient_checkins; FK composta em scheduling_events.patient_id | `alter table scheduling_events drop constraint scheduling_events_patient_fk`; `drop table` em ordem inversa |
 | 20261110000008_patients_functions_rls | permissões patient.read/write e checkin.write + backfill, RLS, guardas, RPCs (agendar com paciente, remarcar preservando paciente, check-in, vincular/revogar conta) | `drop function/policy/trigger`; remover permissões |
 Nota: rascunhos anteriores de 1C (nunca aplicados nem commitados) foram descartados do repositório.
+
+## Fase 1H
+| Migration | Conteúdo | Rollback (apenas hml) |
+|---|---|---|
+| 20261111000009_hardening | Guarda do último proprietário (triggers + advisory lock), auditoria transacional por trigger (`app.audit_row`) em 14 tabelas, `idempotency_keys.locked_at` + `rpc_purge_idempotency` (service_role), `patients.cpf_key_version`; revoga EXECUTE das funções novas | `drop trigger *_audit/*_last_owner`; `drop function app.audit_row, app.guard_last_owner_*, app.other_owner_exists, app.lock_owners, public.rpc_purge_idempotency`; `alter table … drop column locked_at / cpf_key_version` |
