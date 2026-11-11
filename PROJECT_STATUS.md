@@ -12,4 +12,8 @@ RLS 43 · contrato repo 14 · agenda 21 · pacientes/identidade 10 grupos · con
 20/20 **Não iniciado**. Modo A.
 
 ## Próximo
-Decisões pendentes do usuário: provisionamento de organização e origem do vínculo assistencial. Aguardando autorização expressa para a Fase 1D (Prontuário sintético).
+## Decisões do usuário (2026-11-11)
+1. **Provisionamento de organização: manual por enquanto** (via `rpc_provision_organization` com service_role; sem cadastro aberto nem convite SaaS nesta etapa).
+2. **Vínculo assistencial: nasce do agendamento E de atribuição manual** (os dois). Detalhes a desenhar na 1D: duração, revogação, acesso de emergência e registro da finalidade do acesso.
+
+Aguardando autorização expressa para iniciar a Fase 1D (Prontuário sintético).
