@@ -31,3 +31,10 @@ RLS 43/43 (rls_isolation.sql), contrato repo 14/14 (repo_contract.sql), API 22/2
 - Suítes anteriores (RLS 43, contrato 14, agenda 21, pacientes 10 grupos, concorrência C1–C7) seguem verdes com a migration 009.
 - API: 51 testes (mocks). **E2E** (`apps/api/e2e`, 6 cenários) roda no job `e2e` do CI contra o Supabase local do CLI (Auth+PostgREST reais): autenticação, cadastros, idempotência + auditoria com correlação/IP, paciente/CPF, agenda (reserva, 409, replay, check-in), isolamento entre organizações, último owner via JWT real. Passou no CI (run 43008578341).
 - Smoke em hml (rollback): último owner bloqueado (CF409), trigger de auditoria, purge, coluna cpf_key_version.
+
+## Resultados reais (Fase 1D, 2026-11-12)
+- `supabase/tests/clinical.sql`: 17 grupos (permissões, vínculo automático e manual, revogação por cancelamento, imutabilidade, adendos, emergência, log de acesso, isolamento). Validação por mutação (cada defeito injetado foi detectado): sem guarda de imutabilidade → `FAIL K6`; sem revogação ao cancelar → `FAIL K13`; adendo mutável → `FAIL K7`; sem log de acesso → `FAIL K8`.
+- `concurrency.sh` C9: 12 adendos simultâneos no mesmo registro → sequência 1..12 sem buracos nem perdas.
+- Suítes anteriores seguem verdes (RLS 43, contrato 14, agenda 21, pacientes 10, hardening 31, C1–C8).
+- API: 65 testes (clinical.test.ts: 10). E2E: cenário de 1D com vínculo, finalidade, emergência, auditoria e bloqueios (no job `e2e` do CI).
+- hml: migration 010 aplicada; **011 (RPCs/políticas) ainda não aplicada** (ver REPORT_1D).

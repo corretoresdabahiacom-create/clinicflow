@@ -28,3 +28,9 @@ Nota: rascunhos anteriores de 1C (nunca aplicados nem commitados) foram descarta
 | Migration | Conteúdo | Rollback (apenas hml) |
 |---|---|---|
 | 20261111000009_hardening | Guarda do último proprietário (triggers + advisory lock), auditoria transacional por trigger (`app.audit_row`) em 14 tabelas, `idempotency_keys.locked_at` + `rpc_purge_idempotency` (service_role), `patients.cpf_key_version`; revoga EXECUTE das funções novas | `drop trigger *_audit/*_last_owner`; `drop function app.audit_row, app.guard_last_owner_*, app.other_owner_exists, app.lock_owners, public.rpc_purge_idempotency`; `alter table … drop column locked_at / cpf_key_version` |
+
+## Fase 1D
+| Migration | Conteúdo | Rollback (apenas hml) |
+|---|---|---|
+| 20261111000010_clinical_tables | permissões care.*/clinical.* + papéis, care_relationships, clinical_records (hash SHA-256 ao finalizar), clinical_addenda, emergency_access_grants, data_access_logs; guardas de imutabilidade; triggers de vínculo por agendamento; auditoria transacional; RLS forçada e sem GRANT | `drop table` em ordem inversa; `drop function app.*` correspondentes; remover permissões/role_permissions |
+| 20261111000011_clinical_functions_rls | helpers (`clinical_gate`, `log_access`, `has_care_link`), 11 RPCs, políticas de leitura de vínculos/emergências/log, política de leitura de pacientes com vínculo, privilégios | `drop function/policy`; restaurar `patients_select` da 1C |
