@@ -155,7 +155,7 @@ describe.skipIf(!enabled)('ponta a ponta contra Supabase local', () => {
       if (e2) throw e2;
       return data.id as string;
     };
-    const pd = await prof('d', 'Dr. Vinculado'); await prof('d2', 'Dra. Sem Vinculo');
+    const pd = await prof('d', 'Dr. Vinculado'); const pd2 = await prof('d2', 'Dra. Sem Vinculo');
 
     // agendamento do paciente com o profissional do médico => vínculo automático (somente dele)
     const start = new Date(Math.ceil(Date.now() / 3_600_000) * 3_600_000 + 5 * 3_600_000).toISOString();
@@ -165,8 +165,11 @@ describe.skipIf(!enabled)('ponta a ponta contra Supabase local', () => {
     ids.ev2 = (await json(b)).id;
     const rel = await json(await get(`/api/org/care-relationships?patient_id=${ids.pat}`, users.au.token));
     const active = (rel.items as any[]).filter((r) => !r.revoked_at);
-    expect(active).toHaveLength(1);
-    expect(active[0]).toMatchObject({ professional_id: pd, source: 'appointment', event_id: ids.ev2 });
+    // o agendamento anterior (cenário de agenda) já vinculou OUTRO profissional ao mesmo paciente; aqui importa o do médico
+    const mine = active.filter((r) => r.professional_id === pd);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ source: 'appointment', event_id: ids.ev2 });
+    expect(active.filter((r) => r.professional_id === pd2)).toHaveLength(0);
 
     // o médico vinculado enxerga o cadastro do paciente; o não vinculado não
     const pv = await get(`/api/org/patients/${ids.pat}`, users.d.token);
