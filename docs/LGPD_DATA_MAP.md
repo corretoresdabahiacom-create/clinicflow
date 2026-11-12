@@ -14,3 +14,6 @@ Pendências: DPA e localização de dados de cada fornecedor (transferência int
 
 ## Dados pessoais na 1C (sintéticos)
 nome, nome social, data de nascimento, telefone, e-mail (texto), CPF (somente HMAC + 2 últimos dígitos). Base legal/consentimento por finalidade em `patient_consents`. Acesso de leitura individual registrado em `audit_logs` (`patient.read`), sem PII no log. Exportação, eliminação/anonimização e retenção ainda NÃO implementadas.
+
+## 1E — Portal
+O portal trata apenas dados de agendamento do próprio titular/dependente (data, serviço, profissional, unidade). Nada clínico, nenhum CPF. Cache do dispositivo: só arquivos estáticos. Notificação push: texto genérico, sem dado de saúde. Turnstile envia token e IP à Cloudflare (operador a registrar quando ativado).

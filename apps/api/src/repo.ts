@@ -34,6 +34,17 @@ export type BookInput = {
   resources: { type: 'professional' | 'room' | 'equipment'; id: string }[]; title: string | null;
 };
 
+export type PortalPatient = { organization_id: string; organization_name: string; patient_id: string; patient_name: string; relation: 'self' | 'dependent' };
+export type PortalCatalogRow = {
+  unit_id: string; unit_name: string; service_id: string; service_name: string; duration_minutes: number;
+  professional_id: string; professional_name: string; specialty: string | null;
+};
+export type PortalSlot = { starts_at: string; ends_at: string };
+export type PortalAppointment = {
+  event_id: string; status: string; starts_at: string; ends_at: string; unit_id: string; unit_name: string; service_id: string | null; service_name: string | null;
+  professional_id: string | null; professional_name: string | null; can_cancel: boolean;
+};
+export type PortalBookInput = { unitId: string; serviceId: string; professionalId: string; startsAt: string };
 export type PatientQuery = { q?: string; cpfHash?: string; birthDate?: string; limit: number; offset: number };
 export type Consent = { id: string; patient_id: string; purpose: string; granted: boolean; source: string; recorded_at: string };
 export type Guardianship = {
@@ -69,6 +80,17 @@ export interface Repo {
   revokePatientLink(orgId: string, linkId: string): Promise<void>;
   bookEventForPatient(orgId: string, patientId: string, input: BookInput): Promise<SchedEvent>;
   checkIn(orgId: string, eventId: string): Promise<string>;
+
+  // ---- 1E: portal do paciente (RPCs; o banco verifica o vínculo do usuário com o paciente) ----
+  portalContext(): Promise<PortalPatient[]>;
+  portalCatalog(orgId: string): Promise<PortalCatalogRow[]>;
+  portalSlots(orgId: string, q: { unitId: string; serviceId: string; professionalId: string; from: string; to: string }): Promise<PortalSlot[]>;
+  portalAppointments(orgId: string, patientId: string): Promise<PortalAppointment[]>;
+  portalBook(orgId: string, patientId: string, i: PortalBookInput): Promise<string>;
+  portalCancel(orgId: string, eventId: string, reason: string | null): Promise<void>;
+  portalReschedule(orgId: string, eventId: string, startsAt: string): Promise<string>;
+  setAvailability(orgId: string, unitId: string, professionalId: string, windows: { weekday: number; start: string; end: string }[]): Promise<number>;
+  setPortalSettings(orgId: string, s: { minLeadHours: number; cancelMinHours: number; horizonDays: number; maxActive: number; maxReschedules: number }): Promise<void>;
 
   // ---- 1D: vínculo assistencial, prontuário e acesso clínico (tudo por RPC; o banco decide vínculo/finalidade/registro) ----
   listCareRelationships(orgId: string, q: { patientId?: string; professionalId?: string; limit: number; offset: number }): Promise<Row[]>;

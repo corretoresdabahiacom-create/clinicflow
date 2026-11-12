@@ -1,5 +1,5 @@
 import { HttpError } from '../src/errors';
-import type { AuditEntry, BookInput, Consent, Guardianship, IdemRecord, Repo, Row, SchedEvent, Unit } from '../src/repo';
+import type { AuditEntry, BookInput, PortalAppointment, Consent, Guardianship, IdemRecord, Repo, Row, SchedEvent, Unit } from '../src/repo';
 import type { Bindings, Deps, OrgContext, RateLimiter } from '../src/types';
 
 export const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -28,13 +28,20 @@ export const READONLY_AGENDA = ['org.read', 'unit.read', 'professional.read', 'r
 export const DOCTOR = ['org.read', 'unit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read', 'clinical.read', 'clinical.write', 'clinical.emergency'];
 export const AUDITOR = ['org.read', 'unit.read', 'member.read', 'role.read', 'audit.read', 'professional.read', 'resource.read', 'service.read', 'agenda.read', 'care.read', 'clinical.audit'];
 export const CARE_ADMIN = ['org.read', 'unit.read', 'patient.read', 'care.read', 'care.assign'];
+export const PAT_A = '77777777-7777-4777-8777-777777777771';
+export const PAT_DEP = '77777777-7777-4777-8777-777777777772';
+export const PAT_OTHER = '77777777-7777-4777-8777-777777777773';
+export const EV_PAT = '88888888-8888-4888-8888-888888888881';
+export const EV_OTHER = '88888888-8888-4888-8888-888888888882';
 export const RECEPTION = ['org.read', 'unit.read'];
 
+export type PortalWorld = { appts: (PortalAppointment & { patient: string })[]; calls: { fn: string; args: unknown[] }[]; turnstile: string[] };
 export type World = {
+  portal: PortalWorld;
   units: Unit[]; events: SchedEvent[]; consents: Consent[]; guardians: Guardianship[]; links: { id: string; patient: string; user: string; revoked: boolean }[]; checkins: Set<string>; busy: { res: string; from: number; to: number; ev: string }[]; catalog: Record<string, Row[]>; audits: AuditEntry[]; calls: string[]; metas: { correlationId: string; ip: string | null; userAgent: string | null }[]; idem: Map<string, IdemRecord & { key: string; lockedAt: number }>; failNextCreate: boolean; clinicalError: HttpError | null; clinicalArgs: { fn: string; args: unknown[] }[];
 };
 
-export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
+export function makeDeps(opts: { limiter?: RateLimiter | null; turnstile?: (token: string) => boolean } = {}) {
   const users: Record<string, { userId: string; contexts: OrgContext[] }> = {
     'tok-owner': { userId: 'u-owner', contexts: [ctx(ORG_A, OWNER)] },
     'tok-recep': { userId: 'u-recep', contexts: [ctx(ORG_A, RECEPTION)] },
@@ -48,12 +55,16 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
     'tok-auditor': { userId: 'u-auditor', contexts: [ctx(ORG_A, AUDITOR)] },
     'tok-careadmin': { userId: 'u-careadmin', contexts: [ctx(ORG_A, CARE_ADMIN)] },
     'tok-none': { userId: 'u-none', contexts: [] },
+    'tok-pat': { userId: 'u-pat', contexts: [] },
+    'tok-pat2': { userId: 'u-pat2', contexts: [] },
   };
   const world: World = {
     units: [
       { id: UNIT_1, name: 'Unidade 1', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
       { id: UNIT_2, name: 'Unidade 2', timezone: 'America/Sao_Paulo', status: 'active', created_at: 't', updated_at: 't' },
     ],
+    portal: { appts: [{ event_id: EV_PAT, patient: PAT_A, status: 'scheduled', starts_at: '2030-01-01T13:00:00Z', ends_at: '2030-01-01T13:30:00Z', unit_id: UNIT_1, unit_name: 'Unidade 1', service_id: 'sv', service_name: 'Consulta', professional_id: 'pr', professional_name: 'Dra. Sintetica', can_cancel: true },
+      { event_id: EV_OTHER, patient: PAT_OTHER, status: 'scheduled', starts_at: '2030-01-02T13:00:00Z', ends_at: '2030-01-02T13:30:00Z', unit_id: UNIT_1, unit_name: 'Unidade 1', service_id: 'sv', service_name: 'Consulta', professional_id: 'pr', professional_name: 'Dra. Sintetica', can_cancel: true }], calls: [], turnstile: [] },
     events: [], consents: [], guardians: [], links: [], checkins: new Set(), busy: [], catalog: {}, audits: [], calls: [], metas: [], idem: new Map(), failNextCreate: false, clinicalError: null, clinicalArgs: [],
   };
   let seq = 100;
@@ -157,6 +168,47 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
         world.checkins.add(id); return crypto.randomUUID();
       },
       async listAudit() { return []; },
+      async portalContext() {
+        world.portal.calls.push({ fn: 'portalContext', args: [] });
+        if (u.userId !== 'u-pat') return [];
+        return [
+          { organization_id: ORG_A, organization_name: 'Org A', patient_id: PAT_A, patient_name: 'Paciente A', relation: 'self' as const },
+          { organization_id: ORG_A, organization_name: 'Org A', patient_id: PAT_DEP, patient_name: 'Dependente', relation: 'dependent' as const },
+        ];
+      },
+      async portalCatalog(o) {
+        world.portal.calls.push({ fn: 'portalCatalog', args: [o] });
+        if (u.userId !== 'u-pat' || o !== ORG_A) throw new HttpError(404, 'Not found');
+        return [{ unit_id: UNIT_1, unit_name: 'Unidade 1', service_id: 'sv', service_name: 'Consulta', duration_minutes: 30, professional_id: 'pr', professional_name: 'Dra. Sintetica', specialty: null }];
+      },
+      async portalSlots(o, q) {
+        world.portal.calls.push({ fn: 'portalSlots', args: [o, q] });
+        if (u.userId !== 'u-pat' || o !== ORG_A) throw new HttpError(404, 'Not found');
+        return [{ starts_at: '2030-01-03T13:00:00Z', ends_at: '2030-01-03T13:30:00Z' }];
+      },
+      async portalAppointments(o, patient) {
+        world.portal.calls.push({ fn: 'portalAppointments', args: [o, patient] });
+        if (u.userId !== 'u-pat' || o !== ORG_A || (patient !== PAT_A && patient !== PAT_DEP)) throw new HttpError(404, 'Not found');
+        return world.portal.appts.filter((a) => a.patient === patient).map(({ patient: _p, ...a }) => a);
+      },
+      async portalBook(o, patient, i) {
+        world.portal.calls.push({ fn: 'portalBook', args: [o, patient, i] });
+        if (u.userId !== 'u-pat' || o !== ORG_A || (patient !== PAT_A && patient !== PAT_DEP)) throw new HttpError(404, 'Not found');
+        return EV_PAT;
+      },
+      async portalCancel(o, ev, reason) {
+        world.portal.calls.push({ fn: 'portalCancel', args: [o, ev, reason] });
+        const a = world.portal.appts.find((x) => x.event_id === ev);
+        if (u.userId !== 'u-pat' || !a || (a.patient !== PAT_A && a.patient !== PAT_DEP)) throw new HttpError(404, 'Not found');
+      },
+      async portalReschedule(o, ev, startsAt) {
+        world.portal.calls.push({ fn: 'portalReschedule', args: [o, ev, startsAt] });
+        const a = world.portal.appts.find((x) => x.event_id === ev);
+        if (u.userId !== 'u-pat' || !a || (a.patient !== PAT_A && a.patient !== PAT_DEP)) throw new HttpError(404, 'Not found');
+        return EV_PAT;
+      },
+      async setAvailability(o, unit, prof, w) { world.portal.calls.push({ fn: 'setAvailability', args: [o, unit, prof, w] }); return w.length; },
+      async setPortalSettings(o, s) { world.portal.calls.push({ fn: 'setPortalSettings', args: [o, s] }); },
       async writeAudit(e) { world.audits.push(e); },
       async idemBegin(p) {
         const k = `${p.orgId}|${p.scope}|${p.key}`;
@@ -175,6 +227,7 @@ export function makeDeps(opts: { limiter?: RateLimiter | null } = {}) {
     async verifyToken(_e, jwt) { const u = users[jwt]; return u ? { userId: u.userId } : null; },
     makeRepo: (_e, jwt, meta) => { if (meta) world.metas.push(meta); return repoFor(jwt); },
     makeRateLimiter: () => opts.limiter ?? null,
+    verifyTurnstile: async (_e, token) => { world.portal.turnstile.push(token); return (opts.turnstile ?? ((tk) => tk === 'ok-token'))(token); },
   };
   return { deps, world };
 }

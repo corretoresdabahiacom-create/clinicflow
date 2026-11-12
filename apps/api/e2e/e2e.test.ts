@@ -262,6 +262,75 @@ describe.skipIf(!enabled)('ponta a ponta contra Supabase local', () => {
     expect((await get(`/api/org/clinical-records/${ids.rec}?purpose=care`, users.d.token)).status).toBe(403);
   });
 
+  it('1E portal do paciente: vínculo, horários, agendar, remarcar e cancelar com JWT real; sem acesso direto às tabelas', async () => {
+    const A = { token: users.a.token, org: users.a.org };
+    // equipe: libera o serviço online e define a disponibilidade
+    expect((await call(`/api/org/services/${ids.svc}`, { ...A, method: 'PATCH', body: { online_booking: true } })).status).toBe(200);
+    const av = await call(`/api/org/professionals/${ids.prof}/availability`, { ...A, method: 'PUT',
+      body: { unit_id: ids.unit, windows: [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start: '08:00', end: '18:00' })) } });
+    expect(av.status).toBe(200);
+    // paciente com conta própria, vinculada pela equipe (confirmação presencial)
+    const pu = { email: `pac-${tag}@e2e.test`, id: '', token: '' };
+    const { data: cu, error: ce } = await admin.auth.admin.createUser({ email: pu.email, password: PASSWORD, email_confirm: true });
+    if (ce) throw ce;
+    pu.id = cu.user.id;
+    const lk = await call(`/api/org/patients/${ids.pat}/account-link`, { ...A, method: 'POST', body: { user_id: pu.id }, headers: { 'idempotency-key': `idem-link-${tag}` } });
+    expect(lk.status).toBe(201);
+    const anon = createClient(URL_!, ANON!, { auth: { persistSession: false } });
+    const { data: s, error: se } = await anon.auth.signInWithPassword({ email: pu.email, password: PASSWORD });
+    if (se) throw se;
+    pu.token = s.session!.access_token;
+
+    const ctxR = await json(await call('/api/portal/context', { token: pu.token }));
+    expect(ctxR.items).toHaveLength(1);
+    expect(ctxR.items[0]).toMatchObject({ organization_id: users.a.org, patient_id: ids.pat, relation: 'self' });
+    const cat = await json(await call(`/api/portal/orgs/${users.a.org}/catalog`, { token: pu.token }));
+    expect(cat.items.some((i: any) => i.service_id === ids.svc && i.professional_id === ids.prof)).toBe(true);
+
+    const day = new Date(Date.now() + 6 * 86400_000).toISOString().slice(0, 10);
+    const day2 = new Date(Date.now() + 7 * 86400_000).toISOString().slice(0, 10);
+    const slotsOf = async (d: string) => (await json(await call(
+      `/api/portal/orgs/${users.a.org}/slots?unit_id=${ids.unit}&service_id=${ids.svc}&professional_id=${ids.prof}&from=${d}&to=${d}`, { token: pu.token }))).items as { starts_at: string }[];
+    const s1 = await slotsOf(day);
+    expect(s1.length).toBeGreaterThan(10);
+    const base = `/api/portal/orgs/${users.a.org}`;
+    const bookR = await call(`${base}/patients/${ids.pat}/appointments`, { token: pu.token, method: 'POST',
+      body: { unit_id: ids.unit, service_id: ids.svc, professional_id: ids.prof, starts_at: s1[0]!.starts_at } });
+    expect(bookR.status).toBe(201);
+    const evId = (await json(bookR)).event_id as string;
+    expect((await slotsOf(day)).some((x) => x.starts_at === s1[0]!.starts_at)).toBe(false);
+    // repetir a mesma requisição devolve o mesmo agendamento
+    const again = await call(`${base}/patients/${ids.pat}/appointments`, { token: pu.token, method: 'POST',
+      body: { unit_id: ids.unit, service_id: ids.svc, professional_id: ids.prof, starts_at: s1[0]!.starts_at } });
+    expect((await json(again)).event_id).toBe(evId);
+    const mine = await json(await call(`${base}/patients/${ids.pat}/appointments`, { token: pu.token }));
+    expect(mine.items.filter((a: any) => a.status === 'scheduled' && a.event_id === evId)).toHaveLength(1);
+    const { data: aud } = await admin.from('audit_logs').select('actor_id,action').eq('organization_id', users.a.org).eq('resource_id', evId);
+    expect(aud!.some((a) => a.action === 'portal.book' && a.actor_id === pu.id)).toBe(true);
+
+    // remarcar para outro dia e cancelar
+    const s2 = await slotsOf(day2);
+    const rs = await call(`${base}/appointments/${evId}/reschedule`, { token: pu.token, method: 'POST', body: { starts_at: s2[0]!.starts_at } });
+    expect(rs.status).toBe(201);
+    const ev2 = (await json(rs)).event_id as string;
+    const { data: old } = await admin.from('scheduling_events').select('status').eq('id', evId).single();
+    expect(old!.status).toBe('cancelled');
+    expect((await call(`${base}/appointments/${ev2}/cancel`, { token: pu.token, method: 'POST', body: { reason: 'imprevisto' } })).status).toBe(200);
+    expect((await call(`${base}/appointments/${ev2}/cancel`, { token: pu.token, method: 'POST', body: {} })).status).toBe(409);
+
+    // sem acesso direto às tabelas e sem acesso à equipe/outra organização/prontuário
+    const direct = createClient(URL_!, ANON!, { auth: { persistSession: false }, global: { headers: { Authorization: `Bearer ${pu.token}` } } });
+    for (const tbl of ['scheduling_events', 'resource_allocations', 'audit_logs', 'clinical_records', 'professional_availability']) {
+      const { data, error } = await direct.from(tbl).select('*').limit(5);
+      expect(error === null ? data : []).toEqual([]);
+    }
+    expect((await call('/api/org/units', { token: pu.token, org: users.a.org })).status).toBe(403);
+    expect((await call(`/api/org/patients/${ids.pat}/clinical-records?purpose=care`, { token: pu.token, org: users.a.org })).status).toBe(403);
+    expect((await call(`${base}/catalog`, { token: users.b.token })).status).toBe(404);
+    expect((await call(`/api/portal/orgs/${users.b.org}/catalog`, { token: pu.token })).status).toBe(404);
+    expect((await call(`${base}/appointments/${evId}/cancel`, { token: users.b.token, method: 'POST', body: {} })).status).toBe(404);
+  });
+
   it('isolamento entre organizações pela API real: B não acessa A e não enxerga seus dados', async () => {
     expect((await call('/api/org/units', { token: users.b.token, org: users.a.org })).status).toBe(403);
     expect((await call(`/api/org/events?from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z`, { token: users.b.token, org: users.a.org })).status).toBe(403);

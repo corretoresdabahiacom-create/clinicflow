@@ -16,7 +16,7 @@ export class ApiError extends Error {
 }
 
 /** Todas as chamadas levam o JWT do usuário; a organização é só uma seleção validada pelo servidor. */
-export async function api<T>(path: string, init: { method?: string; org?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+export async function api<T>(path: string, init: { method?: string; org?: string; body?: unknown; idempotencyKey?: string; turnstileToken?: string } = {}): Promise<T> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token) throw new ApiError(401, 'Sessão expirada');
@@ -24,6 +24,7 @@ export async function api<T>(path: string, init: { method?: string; org?: string
   if (init.org) headers['X-Organization-Id'] = init.org;
   if (init.body !== undefined) headers['Content-Type'] = 'application/json';
   if (init.idempotencyKey) headers['Idempotency-Key'] = init.idempotencyKey;
+  if (init.turnstileToken) headers['X-Turnstile-Token'] = init.turnstileToken;
   const res = await fetch(`/api${path}`, { method: init.method ?? 'GET', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
   if (!res.ok) {
     const p = (await res.json().catch(() => ({}))) as { title?: string; detail?: string };

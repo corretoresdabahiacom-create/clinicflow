@@ -11,8 +11,8 @@
 | T7 | Upload malicioso | Arquivo com malware | Quarentena + varredura | Uploads | P1 |
 | T8 | Webhook forjado | Sem assinatura | Validação HMAC + idempotência | Webhooks | P1 |
 | T9 | Prompt injection / IA fora de escopo | Mensagem do usuário | Allowlist de ferramentas, sem SQL, limites clínicos | Jailbreak | P1 |
-| T10 | Abuso/força bruta/scraping público | Endpoints públicos | Rate limit, Turnstile (a aprovar), mínimo de dados | Rate limit | P1 |
-| T11 | Dados sensíveis em cache/notificação | PWA, push | Sem cache clínico, push genérico | PWA | P1 |
+| T10 | Abuso/força bruta/scraping público | Endpoints públicos | Login obrigatório, rate limit 10/min nas escritas, Turnstile server-side (fail-closed; chaves no deploy), mínimo de dados | Rate limit + testes API | P1 |
+| T11 | Dados sensíveis em cache/notificação | PWA, push | Cache só do casco estático, nunca API/autenticado; push genérico sem payload; CSP | Testes do service worker (mutação) | P1 |
 | T12 | Perda de dados | Falha/erro humano | Backup, PITR, restauração testada (Gate) | Restore test | P0 |
 | T13 | Mistura homologação/produção | Credenciais compartilhadas | Separação estrutural + checagem de `project_ref` | Config test | P0 |
 | T14 | Dependência comprometida | Supply chain | Lockfile, auditoria, revisão | CI audit | P2 |

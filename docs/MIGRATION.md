@@ -34,3 +34,8 @@ Nota: rascunhos anteriores de 1C (nunca aplicados nem commitados) foram descarta
 |---|---|---|
 | 20261111000010_clinical_tables | permissões care.*/clinical.* + papéis, care_relationships, clinical_records (hash SHA-256 ao finalizar), clinical_addenda, emergency_access_grants, data_access_logs; guardas de imutabilidade; triggers de vínculo por agendamento; auditoria transacional; RLS forçada e sem GRANT | `drop table` em ordem inversa; `drop function app.*` correspondentes; remover permissões/role_permissions |
 | 20261111000011_clinical_functions_rls | helpers (`clinical_gate`, `log_access`, `has_care_link`), 11 RPCs, políticas de leitura de vínculos/emergências/log, política de leitura de pacientes com vínculo, privilégios | `drop function/policy`; restaurar `patients_select` da 1C |
+
+## Fase 1E
+| Migration | Conteúdo | Rollback (apenas hml) |
+|---|---|---|
+| 20261112000012_portal | portal_settings, professional_availability, services.online_booking, funções internas `app.portal_*`, 7 RPCs do portal + 2 da equipe, privilégios (service_role só nas 2 tabelas novas) | `drop function public.rpc_portal_*, rpc_set_availability, rpc_set_portal_settings; drop function app.portal_*; drop table portal_settings, professional_availability; alter table services drop column online_booking` |

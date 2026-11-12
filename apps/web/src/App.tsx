@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { api, supabase, type OrgContext, type Unit } from './api';
+import Portal from './Portal';
 
 const input = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-teal-600';
 const btn = 'rounded-lg bg-teal-700 px-4 py-2 font-medium text-white hover:bg-teal-800 disabled:opacity-50';
@@ -72,7 +73,7 @@ function Workspace({ session }: { session: Session }) {
         <h1 className="text-xl font-semibold">ClinicFlow</h1>
         <div className="flex items-center gap-3 text-sm">
           <span className="text-slate-600">{session.user.email}</span>
-          <button className="underline" onClick={() => supabase.auth.signOut()}>Sair</button>
+          <button className="underline" onClick={() => { void clearDeviceCaches(); void supabase.auth.signOut(); }}>Sair</button>
         </div>
       </header>
       {error && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</p>}
@@ -98,6 +99,47 @@ function Workspace({ session }: { session: Session }) {
   );
 }
 
+async function clearDeviceCaches() {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    reg?.active?.postMessage({ type: 'clear-caches' });
+    if ('caches' in window) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+  } catch { /* melhor esforço */ }
+}
+
+/** Quem é equipe vê a área da clínica; quem tem cadastro de paciente vinculado vê o portal; quem é os dois alterna. */
+function Home({ session }: { session: Session }) {
+  const [mode, setMode] = useState<'staff' | 'portal' | null>(null);
+  const [both, setBoth] = useState(false);
+  useEffect(() => {
+    Promise.all([
+      api<{ organizations: OrgContext[] }>('/me').then((r) => r.organizations.length > 0).catch(() => false),
+      api<{ items: unknown[] }>('/portal/context').then((r) => r.items.length > 0).catch(() => false),
+    ]).then(([staff, patient]) => { setBoth(staff && patient); setMode(staff ? 'staff' : patient ? 'portal' : 'staff'); });
+  }, []);
+  if (!mode) return <p className="p-6 text-slate-600">Carregando…</p>;
+  return (
+    <>
+      {both && (
+        <nav className="mx-auto flex max-w-3xl gap-2 p-4 pb-0">
+          <button className={mode === 'staff' ? btn : 'rounded-lg border px-4 py-2'} onClick={() => setMode('staff')}>Área da clínica</button>
+          <button className={mode === 'portal' ? btn : 'rounded-lg border px-4 py-2'} onClick={() => setMode('portal')}>Meu portal</button>
+        </nav>
+      )}
+      {mode === 'staff' ? <Workspace session={session} /> : (
+        <main>
+          <header className="mx-auto flex max-w-2xl items-center justify-between p-4 pb-0 text-sm">
+            <h1 className="text-xl font-semibold">ClinicFlow</h1>
+            <span className="flex items-center gap-3"><span className="text-slate-600">{session.user.email}</span>
+              <button className="underline" onClick={() => { void clearDeviceCaches(); void supabase.auth.signOut(); }}>Sair</button></span>
+          </header>
+          <Portal />
+        </main>
+      )}
+    </>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   useEffect(() => {
@@ -106,5 +148,5 @@ export default function App() {
     return () => data.subscription.unsubscribe();
   }, []);
   if (session === undefined) return <p className="p-6 text-slate-600">Carregando…</p>;
-  return session ? <Workspace session={session} /> : <Login />;
+  return session ? <Home session={session} /> : <Login />;
 }

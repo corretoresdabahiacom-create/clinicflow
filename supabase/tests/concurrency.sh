@@ -181,5 +181,69 @@ out=$(mktemp); for i in $(seq 12); do ( add_one "$i" >> "$out" ) & done; wait; R
 chk "adendos concluídos com sucesso (de 12)" "$(count OK "$R")" 12
 chk "sequências distintas 1..12 sem buracos" "$($Q -At -c "select count(distinct seq) || '/' || max(seq) || '/' || min(seq) from public.clinical_addenda where record_id = '$REC'")" "12/12/1"
 
+echo "== C10: 10 pacientes disputando o MESMO horário pelo portal; remarcação/cancelamento simultâneos"
+read -r PORG PUNIT PPROF PSVC POWN <<<"$($Q -At <<'SQL' 2>&1 | sed -n 's/.*NOTICE:  IDS //p' | head -1
+do $$
+declare uo uuid := gen_random_uuid(); og uuid; un uuid; pr uuid; sv uuid; p uuid; u uuid; i int;
+begin
+  insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at)
+    values (uo, '00000000-0000-0000-0000-000000000000','authenticated','authenticated', uo::text||'@test.invalid','',now(),now());
+  og := public.rpc_provision_organization(uo, 'Org Portal Conc');
+  insert into public.units (organization_id, name, timezone) values (og, 'Unidade P', 'America/Bahia') returning id into un;
+  insert into public.professionals (organization_id, full_name) values (og, 'Prof Portal') returning id into pr;
+  insert into public.professional_units (organization_id, professional_id, unit_id) values (og, pr, un);
+  insert into public.services (organization_id, name, kind, duration_minutes, online_booking) values (og, 'Consulta', 'consultation', 30, true) returning id into sv;
+  insert into public.service_resource_requirements (organization_id, service_id, resource_type) values (og, sv, 'professional');
+  insert into public.professional_availability (organization_id, professional_id, unit_id, weekday, start_time, end_time)
+    select og, pr, un, d, '08:00', '18:00' from generate_series(0, 6) d;
+  for i in 1..10 loop
+    u := gen_random_uuid();
+    insert into auth.users (id, instance_id, aud, role, email, encrypted_password, created_at, updated_at)
+      values (u, '00000000-0000-0000-0000-000000000000','authenticated','authenticated', u::text||'@test.invalid','',now(),now());
+    insert into public.patients (organization_id, full_name, birth_date) values (og, 'Pac ' || i, '1990-01-01') returning id into p;
+    insert into public.patient_identity_links (organization_id, patient_id, user_id, verified_by) values (og, p, u, uo);
+  end loop;
+  raise notice 'IDS % % % % %', og, un, pr, sv, uo;
+end $$;
+SQL
+)"
+PDAY=$(date -u -d "+9 days" +%F)
+PSLOT=$($Q -At -c "select (('$PDAY'::date)::timestamp + time '10:00') at time zone 'America/Bahia'")
+PAIRS=$($Q -At -F' ' -c "select l.user_id, l.patient_id from public.patient_identity_links l where l.organization_id='$PORG' order by l.patient_id")
+pbook() { # $1=user $2=patient $3=slot
+  $Q -At <<SQL 2>&1 | sed -n "s/.*NOTICE:  //p" | head -1
+select set_config('request.jwt.claims', '{"sub":"$1","role":"authenticated"}', false);
+set role authenticated;
+do \$\$ begin perform public.rpc_portal_book('$PORG','$2','$PUNIT','$PSVC','$PPROF','$3'::timestamptz);
+  raise notice 'OK'; exception when others then raise notice '%', sqlstate; end \$\$;
+SQL
+}
+out=$(mktemp); while read -r pu pp; do ( pbook "$pu" "$pp" "$PSLOT" >> "$out" ) & done <<<"$PAIRS"; wait; R=$(cat "$out"); rm -f "$out"
+chk "reservas do portal confirmadas (mesmo horário)" "$(count OK "$R")" 1
+chk "conflitos 409" "$(count CF409 "$R")" 9
+chk "alocações ativas do profissional no horário" "$($Q -At -c "select count(*) from public.resource_allocations where resource_id='$PPROF' and status='active' and lower(period)='$PSLOT'")" 1
+
+# dois pacientes diferentes tentam remarcar para o mesmo horário livre ao mesmo tempo (cada um tem o seu evento)
+S2=$($Q -At -c "select (('$PDAY'::date)::timestamp + time '14:00') at time zone 'America/Bahia'")
+S3=$($Q -At -c "select (('$PDAY'::date)::timestamp + time '15:00') at time zone 'America/Bahia'")
+S4=$($Q -At -c "select (('$PDAY'::date + 1)::timestamp + time '09:00') at time zone 'America/Bahia'")
+P1=$(sed -n 1p <<<"$PAIRS"); P2=$(sed -n 2p <<<"$PAIRS")
+U1=${P1% *}; PT1=${P1#* }; U2=${P2% *}; PT2=${P2#* }
+pbook "$U1" "$PT1" "$S2" >/dev/null; pbook "$U2" "$PT2" "$S3" >/dev/null
+E1=$($Q -At -c "select id from public.scheduling_events where patient_id='$PT1' and status='scheduled'")
+E2=$($Q -At -c "select id from public.scheduling_events where patient_id='$PT2' and status='scheduled'")
+presched() { $Q -At <<SQL 2>&1 | sed -n "s/.*NOTICE:  //p" | head -1
+select set_config('request.jwt.claims', '{"sub":"$1","role":"authenticated"}', false);
+set role authenticated;
+do \$\$ begin perform public.rpc_portal_reschedule('$PORG','$2','$3'::timestamptz);
+  raise notice 'OK'; exception when others then raise notice '%', sqlstate; end \$\$;
+SQL
+}
+out=$(mktemp); ( presched "$U1" "$E1" "$S4" >> "$out" ) & ( presched "$U2" "$E2" "$S4" >> "$out" ) & wait; R=$(cat "$out"); rm -f "$out"
+chk "remarcações para o mesmo horário: sucesso" "$(count OK "$R")" 1
+chk "remarcações para o mesmo horário: conflito" "$(count CF409 "$R")" 1
+chk "o perdedor manteve o horário original (nenhum evento perdido)" "$($Q -At -c "select count(*) from public.scheduling_events where patient_id in ('$PT1','$PT2') and status='scheduled'")" 2
+chk "nenhuma sobreposição ativa no portal" "$($Q -At -c "select count(*) from public.resource_allocations a join public.resource_allocations b on a.resource_id=b.resource_id and a.id<b.id and a.status='active' and b.status='active' and a.period && b.period where a.organization_id='$PORG'")" 0
+
 [ "$fail" -eq 0 ] && echo "CONCURRENCY_OK" || echo "CONCURRENCY_FAIL"
 exit "$fail"

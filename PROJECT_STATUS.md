@@ -1,6 +1,6 @@
 # PROJECT_STATUS
 
-Data: 2026-11-11 · Fase atual: **1D — Prontuário sintético (implementada; falta aplicar a migration 011 em hml e confirmar o CI)** · Modo operacional: **A (sintético)**
+Data: 2026-11-12 · Fase atual: **1E — Portal do paciente e PWA (implementada localmente; falta CI; hml sem as migrations 011 e 012)** · Modo operacional: **A (sintético)**
 
 ## Estado
 Fases 0, 1A, 1B e 1C aprovadas; 1H (endurecimento) implementada e testada (hml + Postgres local + CI; sintético). Relatórios: `docs/REPORT_1A.md`, `REPORT_1B.md`, `REPORT_1C.md`, `REPORT_1H.md`. Migrations: `docs/MIGRATION.md`.
@@ -16,4 +16,7 @@ RLS 43 · contrato repo 14 · agenda 21 · pacientes/identidade 10 grupos · con
 1. **Provisionamento de organização: manual por enquanto** (via `rpc_provision_organization` com service_role; sem cadastro aberto nem convite SaaS nesta etapa).
 2. **Vínculo assistencial: nasce do agendamento E de atribuição manual** (os dois). Detalhes a desenhar na 1D: duração, revogação, acesso de emergência e registro da finalidade do acesso.
 
-1D autorizada em 2026-11-12. Relatório: `docs/REPORT_1D.md`. Próxima fase (1E) só com autorização expressa.
+1D autorizada em 2026-11-12. Relatório: `docs/REPORT_1D.md`.
+
+## 1E (autorizada em 2026-11-12)
+Decisões: agendamento só para paciente logado; portal = meus agendamentos + cancelar/remarcar; Turnstile "agora" (implementado como verificação server-side configurável, fail-closed; chaves reais só no deploy). Relatório: `docs/REPORT_1E.md`. Próxima fase (2A) só com autorização expressa.

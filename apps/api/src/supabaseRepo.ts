@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { HttpError } from './errors';
-import type { AuditEntry, AuditRow, BookInput, CatalogTable, Consent, Guardianship, PatientQuery, IdemRecord, Org, Repo, Row, SchedEvent, Unit } from './repo';
+import type { AuditEntry, AuditRow, BookInput, CatalogTable, Consent, Guardianship, PatientQuery, PortalAppointment, PortalBookInput, PortalCatalogRow, PortalPatient, PortalSlot, IdemRecord, Org, Repo, Row, SchedEvent, Unit } from './repo';
 import type { Bindings, Deps, OrgContext, RateLimiter, RequestMeta } from './types';
 
 const ORG_COLS = 'id,name,legal_name,cnpj,timezone,status,created_at,updated_at';
@@ -11,7 +11,7 @@ const COLS: Record<CatalogTable, string> = {
   rooms: 'id,unit_id,name,capacity,status,created_at,updated_at',
   equipment: 'id,unit_id,name,status,created_at,updated_at',
   patients: 'id,full_name,social_name,birth_date,cpf_masked,phone,email,status,created_at,updated_at',
-  services: 'id,name,kind,duration_minutes,buffer_before_minutes,buffer_after_minutes,status,created_at,updated_at',
+  services: 'id,name,kind,duration_minutes,buffer_before_minutes,buffer_after_minutes,online_booking,status,created_at,updated_at',
 };
 const EVENT_COLS = 'id,organization_id,unit_id,kind,service_id,patient_id,status,starts_at,ends_at,title,rescheduled_from,cancel_reason,created_at';
 
@@ -125,6 +125,52 @@ export class SupabaseRepo implements Repo {
     const { data, error } = await this.db.rpc('rpc_reschedule_event', { p_org: orgId, p_event: id, p_starts: startsAt, p_ends: endsAt });
     if (error) dbFail(error);
     return this.eventById(orgId, data as string);
+  }
+  async portalContext(): Promise<PortalPatient[]> {
+    const { data, error } = await this.db.rpc('rpc_portal_context');
+    if (error) dbFail(error);
+    return (data ?? []) as PortalPatient[];
+  }
+  async portalCatalog(orgId: string): Promise<PortalCatalogRow[]> {
+    const { data, error } = await this.db.rpc('rpc_portal_catalog', { p_org: orgId });
+    if (error) dbFail(error);
+    return (data ?? []) as PortalCatalogRow[];
+  }
+  async portalSlots(orgId: string, q: { unitId: string; serviceId: string; professionalId: string; from: string; to: string }): Promise<PortalSlot[]> {
+    const { data, error } = await this.db.rpc('rpc_portal_slots', {
+      p_org: orgId, p_unit: q.unitId, p_service: q.serviceId, p_professional: q.professionalId, p_from: q.from, p_to: q.to });
+    if (error) dbFail(error);
+    return (data ?? []) as PortalSlot[];
+  }
+  async portalAppointments(orgId: string, patientId: string): Promise<PortalAppointment[]> {
+    const { data, error } = await this.db.rpc('rpc_portal_appointments', { p_org: orgId, p_patient: patientId });
+    if (error) dbFail(error);
+    return (data ?? []) as PortalAppointment[];
+  }
+  async portalBook(orgId: string, patientId: string, i: PortalBookInput): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_portal_book', {
+      p_org: orgId, p_patient: patientId, p_unit: i.unitId, p_service: i.serviceId, p_professional: i.professionalId, p_starts: i.startsAt });
+    if (error) dbFail(error);
+    return data as string;
+  }
+  async portalCancel(orgId: string, eventId: string, reason: string | null): Promise<void> {
+    const { error } = await this.db.rpc('rpc_portal_cancel', { p_org: orgId, p_event: eventId, ...(reason ? { p_reason: reason } : {}) });
+    if (error) dbFail(error);
+  }
+  async portalReschedule(orgId: string, eventId: string, startsAt: string): Promise<string> {
+    const { data, error } = await this.db.rpc('rpc_portal_reschedule', { p_org: orgId, p_event: eventId, p_starts: startsAt });
+    if (error) dbFail(error);
+    return data as string;
+  }
+  async setAvailability(orgId: string, unitId: string, professionalId: string, windows: { weekday: number; start: string; end: string }[]): Promise<number> {
+    const { data, error } = await this.db.rpc('rpc_set_availability', { p_org: orgId, p_unit: unitId, p_professional: professionalId, p_windows: windows });
+    if (error) dbFail(error);
+    return data as number;
+  }
+  async setPortalSettings(orgId: string, s: { minLeadHours: number; cancelMinHours: number; horizonDays: number; maxActive: number; maxReschedules: number }): Promise<void> {
+    const { error } = await this.db.rpc('rpc_set_portal_settings', {
+      p_org: orgId, p_min_lead: s.minLeadHours, p_cancel_min: s.cancelMinHours, p_horizon: s.horizonDays, p_max_active: s.maxActive, p_max_resched: s.maxReschedules });
+    if (error) dbFail(error);
   }
   async listPatients(orgId: string, q: PatientQuery): Promise<Row[]> {
     let b = this.db.from('patients').select(COLS.patients).eq('organization_id', orgId);
@@ -333,6 +379,19 @@ export const realDeps: Deps = {
     return { userId: data.user.id };
   },
   makeRepo: (env, jwt, meta) => new SupabaseRepo(userClient(env, jwt, meta)),
+  async verifyTurnstile(env, token, ip) {
+    if (!env.TURNSTILE_SECRET) return false;
+    const body = new URLSearchParams({ secret: env.TURNSTILE_SECRET, response: token });
+    if (ip) body.set('remoteip', ip);
+    try {
+      const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+        method: 'POST', body, signal: AbortSignal.timeout(4000),
+      });
+      if (!r.ok) return false;
+      const j = (await r.json()) as { success?: boolean };
+      return j.success === true;
+    } catch { return false; }
+  },
   makeRateLimiter(env): RateLimiter | null {
     if (!env.SUPABASE_SERVICE_ROLE_KEY) return null; // uso excepcional e restrito de service_role (ADR-003/006)
     const svc = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, opts);

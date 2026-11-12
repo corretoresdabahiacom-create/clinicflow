@@ -31,4 +31,12 @@ Códigos de erro das RPCs: CF409 conflito/estado, CF404 não encontrado (inclui 
 | patient_guardianships | Responsável → dependente com validade e revogação | Par ativo único; imutável exceto validade/revogação; sem DELETE |
 | patient_identity_links | Conta de usuário ↔ paciente | Escrita só por RPC (confirmação pela recepção); 1 conta ativa por paciente e 1 paciente ativo por conta; revogável; sem DELETE |
 | patient_checkins | Chegada do paciente | Append-only; 1 por agendamento; só por RPC; janela de 3h antes do início até o fim |
-`scheduling_events.patient_id` agora tem FK composta; só pode passar de nulo para um paciente (nunca trocar/remover). Titular (conta vinculada) e responsável ativo enxergam o próprio cadastro/dependentes por RLS (`app.patient_self_access`); não enxergam agenda (portal é 1E).
+`scheduling_events.patient_id` agora tem FK composta; só pode passar de nulo para um paciente (nunca trocar/remover). Titular (conta vinculada) e responsável ativo enxergam o próprio cadastro/dependentes por RLS (`app.patient_self_access`); não enxergam agenda por tabela; a agenda própria só pelas RPCs do portal (1E).
+
+## Fase 1E — justificativa
+| Objeto | Por quê | Decisões |
+|---|---|---|
+| portal_settings | Regras do portal por organização | Padrões seguros sem linha; escrita só por RPC (`org.manage`) |
+| professional_availability | Sem expediente não há horário honesto para oferecer | Hora local da unidade; escrita só por `rpc_set_availability` (`agenda.write`) |
+| services.online_booking | Liberação explícita por serviço | Padrão `false` |
+| rpc_portal_* | Paciente sem acesso a tabelas | Vínculo checado na função; 404 uniforme; recursos escolhidos pelo servidor |

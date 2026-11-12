@@ -38,3 +38,9 @@ RLS 43/43 (rls_isolation.sql), contrato repo 14/14 (repo_contract.sql), API 22/2
 - Suítes anteriores seguem verdes (RLS 43, contrato 14, agenda 21, pacientes 10, hardening 31, C1–C8).
 - API: 65 testes (clinical.test.ts: 10). E2E: cenário de 1D com vínculo, finalidade, emergência, auditoria e bloqueios (no job `e2e` do CI).
 - hml: migration 010 aplicada; **011 (RPCs/políticas) ainda não aplicada** (ver REPORT_1D).
+
+## Resultados reais (Fase 1E, 2026-11-12)
+- SQL portal.sql: 61 verificações (vínculo, dependente, regras de horário, isolamento, atomicidade da remarcação, privilégios, anon). Suítes anteriores sem regressão.
+- Concorrência C10 (10 pacientes no mesmo horário; remarcações simultâneas).
+- API: 80 testes (portal.test.ts: 15). PWA: 7 testes do service worker (`npm run test:pwa -w @clinicflow/web`, no CI após o build).
+- E2E do portal no job `e2e` do CI. Turnstile real e push real: não testados.

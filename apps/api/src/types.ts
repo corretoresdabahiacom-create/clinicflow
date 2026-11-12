@@ -9,6 +9,7 @@ export type Bindings = {
   CPF_HMAC_KEY?: string; // segredo (>= 32 caracteres) para o HMAC do CPF; nunca no repositório
   CPF_HMAC_KEY_VERSION?: string; // inteiro 1..32767 da chave atual (gravado em patients.cpf_key_version)
   ALLOWED_ORIGIN?: string; // apenas para desenvolvimento local
+  TURNSTILE_SECRET?: string; // segredo do Cloudflare Turnstile; sem ele o agendamento do portal fica fechado (exceto APP_ENV=ci)
 };
 
 export type OrgContext = {
@@ -31,6 +32,8 @@ export type Deps = {
   verifyToken(env: Bindings, jwt: string): Promise<{ userId: string } | null>;
   makeRepo(env: Bindings, jwt: string, meta?: RequestMeta): Repo;
   makeRateLimiter?(env: Bindings): RateLimiter | null;
+  /** Verificação server-side do Turnstile (injetável; testes usam fake). */
+  verifyTurnstile?(env: Bindings, token: string, ip: string | null): Promise<boolean>;
 };
 
 export type Variables = {

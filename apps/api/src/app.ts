@@ -91,11 +91,11 @@ const equipPatch = z.object({ name: shortName.optional(), status: z.enum(['activ
 const mins = (max: number) => z.number().int().min(0).max(max);
 const serviceCreate = z.object({
   name, kind: z.enum(['consultation', 'exam', 'procedure']), duration_minutes: z.number().int().min(5).max(720),
-  buffer_before_minutes: mins(120).optional(), buffer_after_minutes: mins(120).optional(),
+  buffer_before_minutes: mins(120).optional(), buffer_after_minutes: mins(120).optional(), online_booking: z.boolean().optional(),
 }).strict();
 const servicePatch = z.object({
   name: name.optional(), duration_minutes: z.number().int().min(5).max(720).optional(),
-  buffer_before_minutes: mins(120).optional(), buffer_after_minutes: mins(120).optional(), status: z.enum(['active', 'inactive']).optional(),
+  buffer_before_minutes: mins(120).optional(), buffer_after_minutes: mins(120).optional(), online_booking: z.boolean().optional(), status: z.enum(['active', 'inactive']).optional(),
 }).strict().refine(nonEmpty, 'empty patch');
 const instant = z.string().datetime({ offset: true });
 const resourceRef = z.object({ type: z.enum(['professional', 'room', 'equipment']), id: uuid }).strict();
@@ -108,6 +108,25 @@ const cancelBody = z.object({ reason: z.string().trim().min(3).max(300) }).stric
 const rescheduleBody = z.object({ starts_at: instant, ends_at: instant.optional() }).strict();
 const eventsQuery = z.object({ unit_id: uuid.optional(), from: instant, to: instant, limit: z.coerce.number().int().min(1).max(500).default(200) })
   .refine((q) => Date.parse(q.to) > Date.parse(q.from) && Date.parse(q.to) - Date.parse(q.from) <= 62 * 86400_000, 'range must be positive and at most 62 days');
+const portalSlotsQuery = z.object({
+  unit_id: uuid, service_id: uuid, professional_id: uuid,
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+const portalBookBody = z.object({ unit_id: uuid, service_id: uuid, professional_id: uuid, starts_at: instant }).strict();
+const portalCancelBody = z.object({ reason: z.string().trim().min(3).max(300).optional() }).strict();
+const portalRescheduleBody = z.object({ starts_at: instant }).strict();
+const availabilityBody = z.object({
+  unit_id: uuid,
+  windows: z.array(z.object({
+    weekday: z.number().int().min(0).max(6),
+    start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  }).strict().refine((w) => w.end > w.start, 'end must be after start')).max(50),
+}).strict();
+const portalSettingsBody = z.object({
+  min_lead_hours: z.number().int().min(0).max(168), cancel_min_hours: z.number().int().min(0).max(168),
+  horizon_days: z.number().int().min(1).max(365), max_active_per_patient: z.number().int().min(1).max(50),
+  max_reschedules: z.number().int().min(0).max(10),
+}).strict();
 const auditQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   before: z.coerce.number().int().positive().optional(),
@@ -159,8 +178,8 @@ export function createApp(deps: Deps) {
   app.use('/api/*', async (c, next) => { await next(); c.header('Cache-Control', 'no-store'); });
   app.use('/api/*', cors({
     origin: (origin, c) => (c.env.ALLOWED_ORIGIN && origin === c.env.ALLOWED_ORIGIN ? origin : ''),
-    allowHeaders: ['Authorization', 'Content-Type', 'X-Organization-Id', 'Idempotency-Key', 'X-Request-Id'],
-    allowMethods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
+    allowHeaders: ['Authorization', 'Content-Type', 'X-Organization-Id', 'Idempotency-Key', 'X-Request-Id', 'X-Turnstile-Token'],
+    allowMethods: ['GET', 'POST', 'PATCH', 'PUT', 'OPTIONS'],
   }));
 
   app.use('/api/*', async (c, next) => {
@@ -565,7 +584,76 @@ export function createApp(deps: Deps) {
     });
   });
 
+  // ---- staff: disponibilidade e parâmetros do portal ----
+  org.put('/professionals/:id/availability', guard('agenda.write', { anyUnit: true }), async (c) => {
+    const id = idParam(c); const b = availabilityBody.parse(await readJson(c));
+    const n = await c.get('repo').setAvailability(orgId(c), b.unit_id, id, b.windows);
+    return c.json({ windows: n });
+  });
+  org.put('/portal-settings', guard('org.manage'), async (c) => {
+    const b = portalSettingsBody.parse(await readJson(c));
+    await c.get('repo').setPortalSettings(orgId(c), {
+      minLeadHours: b.min_lead_hours, cancelMinHours: b.cancel_min_hours, horizonDays: b.horizon_days,
+      maxActive: b.max_active_per_patient, maxReschedules: b.max_reschedules });
+    return c.json({ ok: true });
+  });
+
   app.route('/api/org', org);
+
+  // ---- portal do paciente (usuário logado; o vínculo paciente↔conta é verificado no banco, nunca aqui) ----
+  // Sem X-Organization-Id: o paciente não é membro da equipe. Nenhuma rota devolve dado clínico.
+  const portal = new Hono<Env>();
+  const pOrg = (c: Ctx) => { const v = c.req.param('org') ?? ''; if (!uuid.safeParse(v).success) throw new HttpError(400, 'Invalid id'); return v; };
+  const pId = (c: Ctx, k: string) => { const v = c.req.param(k) ?? ''; if (!uuid.safeParse(v).success) throw new HttpError(400, 'Invalid id'); return v; };
+  // Escritas: limite mais rígido por usuário e Turnstile (T10). Sem segredo configurado, o agendamento fica FECHADO
+  // (fail-closed), exceto em APP_ENV=ci, que só roda contra Supabase local.
+  const writeGate: MiddlewareHandler<Env> = async (c, next) => {
+    const limiter = deps.makeRateLimiter?.(c.env);
+    if (limiter) {
+      let ok: boolean;
+      try { ok = await limiter.hit(`portal:${c.get('userId')}`, 60, 10); }
+      catch (e) { log('error', 'rate_limiter_failed', { requestId: c.get('requestId'), message: (e as Error).message }); throw new HttpError(503, 'Service unavailable'); }
+      if (!ok) { c.header('Retry-After', '60'); throw new HttpError(429, 'Too many requests'); }
+    }
+    if (c.env.APP_ENV !== 'ci' || c.env.TURNSTILE_SECRET) {
+      if (!c.env.TURNSTILE_SECRET || !deps.verifyTurnstile) {
+        log('error', 'turnstile_not_configured', { requestId: c.get('requestId') });
+        throw new HttpError(503, 'Online booking is temporarily unavailable');
+      }
+      const token = c.req.header('x-turnstile-token') ?? '';
+      if (!token || token.length > 2048) throw new HttpError(403, 'Verification required');
+      const pass = await deps.verifyTurnstile(c.env, token, c.req.header('cf-connecting-ip') ?? null);
+      if (!pass) throw new HttpError(403, 'Verification failed');
+    }
+    await next();
+  };
+
+  portal.get('/context', async (c) => c.json({ items: await c.get('repo').portalContext() }));
+  portal.get('/orgs/:org/catalog', async (c) => c.json({ items: await c.get('repo').portalCatalog(pOrg(c)) }));
+  portal.get('/orgs/:org/slots', async (c) => {
+    const q = portalSlotsQuery.parse(c.req.query());
+    const items = await c.get('repo').portalSlots(pOrg(c), { unitId: q.unit_id, serviceId: q.service_id, professionalId: q.professional_id, from: q.from, to: q.to });
+    return c.json({ items });
+  });
+  portal.get('/orgs/:org/patients/:patient/appointments', async (c) =>
+    c.json({ items: await c.get('repo').portalAppointments(pOrg(c), pId(c, 'patient')) }));
+  portal.post('/orgs/:org/patients/:patient/appointments', writeGate, async (c) => {
+    const b = portalBookBody.parse(await readJson(c));
+    const id = await c.get('repo').portalBook(pOrg(c), pId(c, 'patient'), {
+      unitId: b.unit_id, serviceId: b.service_id, professionalId: b.professional_id, startsAt: b.starts_at });
+    return c.json({ event_id: id }, 201);
+  });
+  portal.post('/orgs/:org/appointments/:id/cancel', async (c) => {
+    const b = portalCancelBody.parse(await readJson(c));
+    await c.get('repo').portalCancel(pOrg(c), pId(c, 'id'), b.reason ?? null);
+    return c.json({ ok: true });
+  });
+  portal.post('/orgs/:org/appointments/:id/reschedule', writeGate, async (c) => {
+    const b = portalRescheduleBody.parse(await readJson(c));
+    const id = await c.get('repo').portalReschedule(pOrg(c), pId(c, 'id'), b.starts_at);
+    return c.json({ event_id: id }, 201);
+  });
+  app.route('/api/portal', portal);
 
   app.notFound((c) => problem(c, 404, 'Not found'));
   app.onError((err, c) => {
