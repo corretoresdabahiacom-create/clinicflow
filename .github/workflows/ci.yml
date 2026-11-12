@@ -71,7 +71,8 @@ jobs:
           # O runner às vezes já tem portas ocupadas (ex.: 54322); tenta de novo limpando entre as tentativas.
           for i in 1 2 3; do
             supabase start -x studio,imgproxy,edge-runtime,logflare,vector,mailpit,supavisor && exit 0
-            echo "supabase start falhou (tentativa $i); limpando e repetindo"
+            echo "supabase start falhou (tentativa $i); portas em uso:"; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ":54[0-9]{3}" || true
+            echo "limpando e repetindo"
             supabase stop --no-backup || true
             docker ps -aq --filter "name=supabase_" | xargs -r docker rm -f || true
             sleep 10
