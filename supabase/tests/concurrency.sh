@@ -227,7 +227,8 @@ chk "alocações ativas do profissional no horário" "$($Q -At -c "select count(
 S2=$($Q -At -c "select (('$PDAY'::date)::timestamp + time '14:00') at time zone 'America/Bahia'")
 S3=$($Q -At -c "select (('$PDAY'::date)::timestamp + time '15:00') at time zone 'America/Bahia'")
 S4=$($Q -At -c "select (('$PDAY'::date + 1)::timestamp + time '09:00') at time zone 'America/Bahia'")
-P1=$(sed -n 1p <<<"$PAIRS"); P2=$(sed -n 2p <<<"$PAIRS")
+FREE=$($Q -At -F" " -c "select l.user_id, l.patient_id from public.patient_identity_links l where l.organization_id='$PORG' and not exists (select 1 from public.scheduling_events e where e.patient_id=l.patient_id) order by l.patient_id")
+P1=$(sed -n 1p <<<"$FREE"); P2=$(sed -n 2p <<<"$FREE")
 U1=${P1% *}; PT1=${P1#* }; U2=${P2% *}; PT2=${P2#* }
 pbook "$U1" "$PT1" "$S2" >/dev/null; pbook "$U2" "$PT2" "$S3" >/dev/null
 E1=$($Q -At -c "select id from public.scheduling_events where patient_id='$PT1' and status='scheduled'")
