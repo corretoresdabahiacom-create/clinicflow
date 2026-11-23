@@ -19,7 +19,7 @@ Portal para o **paciente logado** (ver, agendar, cancelar e remarcar os próprio
 - Teste de interface feito à mão com API simulada (captura de tela); não é teste automatizado.
 
 ## 4. Migrations
-`20261112000012_portal`. **hml**: tem até a 010; **011 (1D) e 012 não aplicadas** (a aplicação da 011 havia ficado sem resposta; aguardo sua decisão). Correção incluída: a 012 não reabre `service_role` nas tabelas clínicas.
+`20261112000012_portal`. **hml**: **011 (1D) e 012 aplicadas em 2026-11-23** (a 011 usa `alter policy` em `patients_select`, sem `drop policy`). Correção incluída: a 012 não reabre `service_role` nas tabelas clínicas.
 
 ## 5. Testes (locais)
 SQL: portal 61 verificações; as 6 suítes anteriores seguem verdes (43/14/21/10/31/17). Concorrência C10: 10 pacientes no mesmo horário → 1 vence, 9 conflitos; remarcações simultâneas ao mesmo horário → 1 vence e o perdedor mantém o original. API: 80 testes (15 novos). PWA: 7 testes executando o service worker em sandbox. Mutação: removi checagem de vínculo, antecedência mínima, cabeçalho de autorização no SW e payload genérico do push — todas detectadas (uma lacuna de teste da antecedência foi encontrada e corrigida).
@@ -28,4 +28,4 @@ SQL: portal 61 verificações; as 6 suítes anteriores seguem verdes (43/14/21/1
 Sem Turnstile real, a defesa de abuso se resume ao limite por usuário (e login obrigatório). Rate limit depende de `SUPABASE_SERVICE_ROLE_KEY` configurada no Worker. Dados em texto simples (sintéticos). Production Gate 20/20 "Não iniciado". Custos: nenhum. Deploy: nenhum.
 
 ## 7. Recomendação
-Decidir: aplicar 011 e 012 no hml; quando criar a conta Cloudflare (gratuita), configurar Turnstile; só então considerar a próxima fase.
+Decidir: quando criar a conta Cloudflare (gratuita), configurar Turnstile; só então considerar a próxima fase.

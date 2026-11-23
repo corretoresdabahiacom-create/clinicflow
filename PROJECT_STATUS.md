@@ -1,6 +1,6 @@
 # PROJECT_STATUS
 
-Data: 2026-11-12 · Fase atual: **1E — Portal do paciente e PWA (implementada localmente; falta CI; hml sem as migrations 011 e 012)** · Modo operacional: **A (sintético)**
+Data: 2026-11-12 · Fase atual: **1E — Portal do paciente e PWA (implementada localmente; CI verde; hml com 011 e 012 aplicadas em 2026-11-23)** · Modo operacional: **A (sintético)**
 
 ## Estado
 Fases 0, 1A, 1B e 1C aprovadas; 1H (endurecimento) implementada e testada (hml + Postgres local + CI; sintético). Relatórios: `docs/REPORT_1A.md`, `REPORT_1B.md`, `REPORT_1C.md`, `REPORT_1H.md`. Migrations: `docs/MIGRATION.md`.

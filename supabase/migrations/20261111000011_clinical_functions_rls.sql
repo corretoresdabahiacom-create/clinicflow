@@ -288,8 +288,7 @@ create policy access_logs_select on public.data_access_logs for select to authen
 grant select on public.care_relationships, public.emergency_access_grants, public.data_access_logs to authenticated;
 
 -- Profissional com vínculo ativo enxerga o cadastro administrativo do paciente (nome, nascimento, máscara do CPF...)
-drop policy patients_select on public.patients;
-create policy patients_select on public.patients for select to authenticated
+alter policy patients_select on public.patients
   using (app.has_perm_any(organization_id, 'patient.read') or app.patient_self_access(organization_id, id) or app.has_care_link(organization_id, id));
 
 -- ---------------------------------------------------------------------------------------------------------
