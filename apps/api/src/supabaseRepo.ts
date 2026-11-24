@@ -374,9 +374,18 @@ export class SupabaseRepo implements Repo {
 
 export const realDeps: Deps = {
   async verifyToken(env, jwt) {
-    const { data, error } = await createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, opts).auth.getUser(jwt);
-    if (error || !data.user) return null;
-    return { userId: data.user.id };
+    try {
+      const { data, error } = await createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, opts).auth.getUser(jwt);
+      if (error || !data.user) {
+        // Diagnóstico sem dados sensíveis: nunca registra o token nem a chave.
+        console.warn(JSON.stringify({ level: 'warn', event: 'verify_token_rejected', name: error?.name, status: (error as { status?: number } | null)?.status, code: (error as { code?: string } | null)?.code, message: error?.message?.slice(0, 200) }));
+        return null;
+      }
+      return { userId: data.user.id };
+    } catch (e) {
+      console.error(JSON.stringify({ level: 'error', event: 'verify_token_exception', name: (e as Error)?.name, message: String((e as Error)?.message ?? e).slice(0, 200) }));
+      return null;
+    }
   },
   makeRepo: (env, jwt, meta) => new SupabaseRepo(userClient(env, jwt, meta)),
   async verifyTurnstile(env, token, ip) {
