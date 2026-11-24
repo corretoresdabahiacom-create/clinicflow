@@ -379,6 +379,18 @@ export const realDeps: Deps = {
       if (error || !data.user) {
         // Diagnóstico sem dados sensíveis: nunca registra o token nem a chave.
         console.warn(JSON.stringify({ level: 'warn', event: 'verify_token_rejected', name: error?.name, status: (error as { status?: number } | null)?.status, code: (error as { code?: string } | null)?.code, message: error?.message?.slice(0, 200) }));
+        // Sonda temporária: repete a chamada crua para registrar o que o Supabase (ou o intermediário) respondeu.
+        try {
+          const r = await fetch(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { apikey: env.SUPABASE_ANON_KEY, Authorization: `Bearer ${jwt}` } });
+          const body = r.status === 200 ? '' : (await r.text()).slice(0, 120);
+          console.warn(JSON.stringify({
+            level: 'warn', event: 'verify_token_probe', status: r.status, server: r.headers.get('server'), contentType: r.headers.get('content-type'),
+            sbRequestId: r.headers.get('sb-request-id'), cfMitigated: r.headers.get('cf-mitigated'), body,
+            keyPrefix: env.SUPABASE_ANON_KEY.slice(0, 3), keyLength: env.SUPABASE_ANON_KEY.length,
+          }));
+        } catch (pe) {
+          console.warn(JSON.stringify({ level: 'warn', event: 'verify_token_probe_failed', message: String((pe as Error)?.message ?? pe).slice(0, 200) }));
+        }
         return null;
       }
       return { userId: data.user.id };
