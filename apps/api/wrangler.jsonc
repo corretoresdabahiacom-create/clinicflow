@@ -6,6 +6,7 @@
   "vars": {
     "APP_ENV": "hml",
     "SUPABASE_URL": "https://tbnzrwgwbmkdjinisrhl.supabase.co",
-    "EXPECTED_PROJECT_REF": "tbnzrwgwbmkdjinisrhl"
+    "EXPECTED_PROJECT_REF": "tbnzrwgwbmkdjinisrhl",
+    "ALLOWED_ORIGIN": "https://clinicflow.corretoresdabahia-com.workers.dev"
   }
 }

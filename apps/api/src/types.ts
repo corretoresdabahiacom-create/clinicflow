@@ -8,7 +8,7 @@ export type Bindings = {
   EXPECTED_PROJECT_REF: string;
   CPF_HMAC_KEY?: string; // segredo (>= 32 caracteres) para o HMAC do CPF; nunca no repositório
   CPF_HMAC_KEY_VERSION?: string; // inteiro 1..32767 da chave atual (gravado em patients.cpf_key_version)
-  ALLOWED_ORIGIN?: string; // apenas para desenvolvimento local
+  ALLOWED_ORIGIN?: string; // origem pública do frontend (CORS); definida em wrangler.jsonc por ambiente
   TURNSTILE_SECRET?: string; // segredo do Cloudflare Turnstile; sem ele o agendamento do portal fica fechado (exceto APP_ENV=ci)
 };
 
